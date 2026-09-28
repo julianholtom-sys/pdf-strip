@@ -19,11 +19,16 @@ function u32(bytes: Uint8Array, i: number) {
   );
 }
 
-export async function stripPdfRewrite(bytes: Uint8Array) {
+export async function stripPdfRewrite(
+  bytes: Uint8Array,
+  onProgress?: (pct: number) => void,
+) {
+  onProgress?.(20);
   const src = await PDFDocument.load(bytes, {
     ignoreEncryption: false,
     updateMetadata: false,
   });
+  onProgress?.(45);
   const out = await PDFDocument.create();
   const pages = await out.copyPages(src, src.getPageIndices());
   for (const page of pages) out.addPage(page);
@@ -33,7 +38,10 @@ export async function stripPdfRewrite(bytes: Uint8Array) {
   out.setKeywords([]);
   out.setProducer("");
   out.setCreator("");
-  return await out.save({ useObjectStreams: true });
+  onProgress?.(75);
+  const saved = await out.save({ useObjectStreams: true });
+  onProgress?.(95);
+  return saved;
 }
 
 export function stripJpegExif(bytes: Uint8Array) {
@@ -101,8 +109,13 @@ export function stripPngText(bytes: Uint8Array) {
 const EMPTY_CORE = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"></cp:coreProperties>`;
 
-export async function stripDocx(bytes: Uint8Array) {
+export async function stripDocx(
+  bytes: Uint8Array,
+  onProgress?: (pct: number) => void,
+) {
+  onProgress?.(20);
   const zip = await JSZip.loadAsync(bytes);
+  onProgress?.(40);
   zip.file("docProps/core.xml", EMPTY_CORE);
   zip.remove("docProps/custom.xml");
 
@@ -146,18 +159,31 @@ export async function stripDocx(bytes: Uint8Array) {
     zip.file(name, stripJpegExif(image));
   }
 
-  return await zip.generateAsync({
+  onProgress?.(80);
+  const packed = await zip.generateAsync({
     type: "uint8array",
     compression: "DEFLATE",
   });
+  onProgress?.(95);
+  return packed;
 }
 
 export async function stripInBrowser(
   kind: "pdf" | "jpeg" | "png" | "docx",
   bytes: Uint8Array,
+  onProgress?: (pct: number) => void,
 ) {
-  if (kind === "pdf") return await stripPdfRewrite(bytes);
-  if (kind === "jpeg") return stripJpegExif(bytes);
-  if (kind === "png") return stripPngText(bytes);
-  return await stripDocx(bytes);
+  if (kind === "pdf") return await stripPdfRewrite(bytes, onProgress);
+  onProgress?.(30);
+  if (kind === "jpeg") {
+    const out = stripJpegExif(bytes);
+    onProgress?.(95);
+    return out;
+  }
+  if (kind === "png") {
+    const out = stripPngText(bytes);
+    onProgress?.(95);
+    return out;
+  }
+  return await stripDocx(bytes, onProgress);
 }

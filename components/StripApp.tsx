@@ -10,6 +10,8 @@ type Item = {
   id: string;
   file: File;
   status: Status;
+  step: string;
+  progress: number;
   error?: string;
   url?: string;
   engine?: string;
@@ -17,6 +19,10 @@ type Item = {
 
 const ACCEPT =
   ".pdf,.jpg,.jpeg,.png,.docx,application/pdf,image/jpeg,image/png,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+const WIPE_MS = 2000;
+
+let nativeApi: boolean | null = null;
 
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -62,7 +68,20 @@ function badgeFor(status: Status) {
   if (status === "ready") return { className: "badge completed", label: "Clean" };
   if (status === "wiping") return { className: "badge wiping", label: "Wiping" };
   if (status === "error") return { className: "badge error", label: "Failed" };
-  return { className: "badge queued", label: "Queued" };
+  return { className: "badge queued", label: "Ready" };
+}
+
+function stepFor(pct: number) {
+  if (pct < 20) return "Reading file";
+  if (pct < 50) return "Stripping tags";
+  if (pct < 78) return "Rewriting file";
+  if (pct < 100) return "Packing the clean file";
+  return "Clean";
+}
+
+function nativeApiAllowed() {
+  if (typeof window === "undefined") return false;
+  return !window.location.hostname.endsWith("github.io");
 }
 
 function BrandMark() {
@@ -97,27 +116,102 @@ function BrandMark() {
 export function StripApp() {
   const inputRef = useRef<HTMLInputElement>(null);
   const addFilesRef = useRef<(list: FileList | File[]) => void>(() => {});
+  const itemsRef = useRef<Item[]>([]);
+  const runningRef = useRef(false);
   const [items, setItems] = useState<Item[]>([]);
   const [hover, setHover] = useState(false);
   const [share, setShare] = useState("");
+  const [running, setRunning] = useState(false);
+  const [cursor, setCursor] = useState({ i: 0, n: 0 });
+  const [toast, setToast] = useState<"off" | "saving" | "saved">("off");
 
   useEffect(() => {
     setShare(window.location.href);
   }, []);
 
+  itemsRef.current = items;
+
   const readyCount = items.filter((item) => item.status === "ready").length;
-  const busy = items.some((item) => item.status === "wiping");
+  const queuedCount = items.filter((item) => item.status === "queued").length;
+  const wipingItem = items.find((item) => item.status === "wiping");
+
+  useEffect(() => {
+    if (running) {
+      setToast("saving");
+      return;
+    }
+    if (items.length > 0 && readyCount === items.length) {
+      setToast("saved");
+      const timer = window.setTimeout(() => setToast("off"), 2500);
+      return () => window.clearTimeout(timer);
+    }
+    setToast("off");
+  }, [running, readyCount, items.length]);
 
   const headline = useMemo(() => {
     if (!items.length) return "Strip metadata";
-    if (busy) return "Wiping files";
+    if (running && cursor.n > 0) return `Wiping ${cursor.i} of ${cursor.n}`;
+    if (running) return "Wiping files";
+    if (queuedCount > 0) return queuedCount === 1 ? "1 file ready" : `${queuedCount} files ready`;
     if (readyCount === items.length) return "Clean copies ready";
     return "Strip metadata";
-  }, [busy, items.length, readyCount]);
+  }, [items.length, running, cursor, queuedCount, readyCount]);
 
-  async function wipeClient(file: File) {
+  function patchItem(id: string, partial: Partial<Item>) {
+    setItems((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...partial } : row)),
+    );
+  }
+
+  function animateProgress(id: string, cancelled: { current: boolean }) {
+    const started = performance.now();
+    return new Promise<void>((resolve) => {
+      const tick = (now: number) => {
+        if (cancelled.current) {
+          resolve();
+          return;
+        }
+        const t = Math.min(1, (now - started) / WIPE_MS);
+        const eased = 1 - (1 - t) ** 3;
+        const progress = Math.round(eased * 100);
+        patchItem(id, { progress, step: stepFor(progress) });
+        if (t < 1) {
+          requestAnimationFrame(tick);
+        } else {
+          resolve();
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  async function tryNativeStrip(file: File) {
+    if (!nativeApiAllowed() || nativeApi === false) return null;
+    const body = new FormData();
+    body.append("file", file);
+    try {
+      const response = await fetch("/api/strip", { method: "POST", body });
+      if (!response.ok) {
+        nativeApi = false;
+        return null;
+      }
+      nativeApi = true;
+      const blob = await response.blob();
+      return {
+        url: URL.createObjectURL(blob),
+        engine: response.headers.get("X-Strip-Engine") ?? "native",
+      };
+    } catch {
+      nativeApi = false;
+      return null;
+    }
+  }
+
+  async function wipeWork(file: File) {
     const kind = kindFromName(file.name, file.type);
     if (!kind) throw new Error("Use a PDF, JPEG, PNG, or Word (.docx) file.");
+    const native = await tryNativeStrip(file);
+    if (native) return native;
     const bytes = new Uint8Array(await file.arrayBuffer());
     const cleaned = await stripInBrowser(kind, bytes);
     const copy = new Uint8Array(cleaned);
@@ -128,63 +222,74 @@ export function StripApp() {
   }
 
   async function wipeOne(item: Item) {
-    setItems((current) =>
-      current.map((row) =>
-        row.id === item.id ? { ...row, status: "wiping", error: undefined } : row,
-      ),
-    );
+    const cancelled = { current: false };
+    patchItem(item.id, {
+      status: "wiping",
+      progress: 0,
+      step: "Reading file",
+      error: undefined,
+    });
     try {
-      let url: string | undefined;
-      let engine = "rewrite";
-      const body = new FormData();
-      body.append("file", item.file);
-      try {
-        const response = await fetch("/api/strip", { method: "POST", body });
-        if (response.ok) {
-          const blob = await response.blob();
-          url = URL.createObjectURL(blob);
-          engine = response.headers.get("X-Strip-Engine") ?? "native";
-        }
-      } catch {
-        /* GitHub Pages has no API; wipe in the browser instead. */
-      }
-      if (!url) {
-        const local = await wipeClient(item.file);
-        url = local.url;
-        engine = local.engine;
-      }
+      const work = wipeWork(item.file);
+      const bar = animateProgress(item.id, cancelled);
+      const result = await work;
+      await bar;
       setItems((current) =>
         current.map((row) => {
           if (row.id !== item.id) return row;
           if (row.url) URL.revokeObjectURL(row.url);
-          return { ...row, status: "ready", url, engine };
+          return {
+            ...row,
+            status: "ready",
+            progress: 100,
+            step: "Clean",
+            url: result.url,
+            engine: result.engine,
+          };
         }),
       );
     } catch (error) {
-      setItems((current) =>
-        current.map((row) =>
-          row.id === item.id
-            ? {
-                ...row,
-                status: "error",
-                error: error instanceof Error ? error.message : "The wipe failed.",
-              }
-            : row,
-        ),
-      );
+      cancelled.current = true;
+      patchItem(item.id, {
+        status: "error",
+        progress: 0,
+        step: "Failed",
+        error: error instanceof Error ? error.message : "The wipe failed.",
+      });
+    }
+  }
+
+  async function startWipe() {
+    if (runningRef.current) return;
+    const batch = itemsRef.current.filter((item) => item.status === "queued");
+    if (!batch.length) return;
+    runningRef.current = true;
+    setRunning(true);
+    setCursor({ i: 0, n: batch.length });
+    try {
+      for (let i = 0; i < batch.length; i += 1) {
+        setCursor({ i: i + 1, n: batch.length });
+        await wipeOne(batch[i]);
+      }
+    } finally {
+      runningRef.current = false;
+      setRunning(false);
+      setCursor({ i: 0, n: 0 });
     }
   }
 
   function addFiles(list: FileList | File[]) {
+    if (runningRef.current) return;
     const allowed = normalizeFiles(list);
     if (!allowed.length) return;
     const next: Item[] = allowed.map((file) => ({
       id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
       file,
       status: "queued",
+      step: "Ready to wipe",
+      progress: 0,
     }));
     setItems((current) => [...current, ...next]);
-    for (const item of next) void wipeOne(item);
   }
 
   addFilesRef.current = addFiles;
@@ -207,6 +312,7 @@ export function StripApp() {
   }
 
   function clearAll() {
+    if (runningRef.current) return;
     for (const item of items) {
       if (item.url) URL.revokeObjectURL(item.url);
     }
@@ -222,6 +328,30 @@ export function StripApp() {
       link.click();
     }
   }
+
+  function retry(item: Item) {
+    if (item.url) URL.revokeObjectURL(item.url);
+    patchItem(item.id, {
+      status: "queued",
+      step: "Ready to wipe",
+      progress: 0,
+      error: undefined,
+      url: undefined,
+      engine: undefined,
+    });
+  }
+
+  const toastLabel =
+    toast === "saving"
+      ? wipingItem
+        ? `Wiping ${cursor.i} of ${cursor.n} · ${wipingItem.file.name} · ${wipingItem.progress}%`
+        : "Wiping files"
+      : toast === "saved"
+        ? `${readyCount} clean file${readyCount === 1 ? "" : "s"} ready`
+        : "";
+
+  const wipeLabel =
+    queuedCount === 1 ? "Wipe file" : `Wipe ${queuedCount} files`;
 
   return (
     <div className="app-shell">
@@ -242,14 +372,28 @@ export function StripApp() {
         <section className="hero-panel">
           <h1>{headline}</h1>
           <p>
-            Drop a PDF, photo, or Word file. Author names, dates, software stamps,
-            EXIF, and Content Credentials are stripped. Colour profiles stay so the
-            page still looks like itself.
+            Add every file first. Press Wipe, and each one is stripped in order —
+            you will see it run from 0 to 100 before the next starts.
           </p>
         </section>
 
         <div className="toolbar">
-          <button type="button" className="btn" onClick={() => inputRef.current?.click()}>
+          {queuedCount > 0 && !running ? (
+            <button type="button" className="btn" onClick={() => void startWipe()}>
+              {wipeLabel}
+            </button>
+          ) : null}
+          {running ? (
+            <button type="button" className="btn" disabled>
+              Wiping…
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={queuedCount > 0 || running ? "btn secondary" : "btn"}
+            onClick={() => inputRef.current?.click()}
+            disabled={running}
+          >
             Choose files
           </button>
           {readyCount > 1 ? (
@@ -258,11 +402,14 @@ export function StripApp() {
             </button>
           ) : null}
           {items.length > 0 ? (
-            <button type="button" className="btn secondary" onClick={clearAll}>
+            <button type="button" className="btn secondary" onClick={clearAll} disabled={running}>
               Clear
             </button>
           ) : null}
-          <span className="muted">PDF, JPEG, PNG, DOCX · 32 MB each · paste several at once</span>
+          <span className="muted">
+            PDF, JPEG, PNG, DOCX · 32 MB each · paste several at once
+            {items.length > 0 ? ` · ${readyCount}/${items.length} clean` : ""}
+          </span>
         </div>
 
         <div className="split">
@@ -270,12 +417,12 @@ export function StripApp() {
             <label
               onDragEnter={(event) => {
                 event.preventDefault();
-                setHover(true);
+                if (!running) setHover(true);
               }}
               onDragOver={(event) => event.preventDefault()}
               onDragLeave={() => setHover(false)}
               onDrop={onDrop}
-              className={`drop-slot${hover ? " is-hover" : ""}`}
+              className={`drop-slot${hover ? " is-hover" : ""}${running ? " is-locked" : ""}`}
             >
               <input
                 ref={inputRef}
@@ -283,33 +430,51 @@ export function StripApp() {
                 type="file"
                 accept={ACCEPT}
                 multiple
+                disabled={running}
                 onChange={(event) => {
                   if (event.target.files?.length) addFiles(event.target.files);
                   event.target.value = "";
                 }}
               />
-              <strong>Drop or paste files</strong>
-              <span>several at once · nothing is stored</span>
+              <strong>{running ? "Wiping in order" : "Drop or paste files"}</strong>
+              <span>
+                {running
+                  ? "this batch is locked until every file is done"
+                  : "add them all, then press Wipe files"}
+              </span>
             </label>
 
             {items.length > 0 ? (
-              <div className="envelope-list">
+              <div className="envelope-list" aria-live="polite">
                 {items.map((item, index) => {
                   const badge = badgeFor(item.status);
                   return (
                     <div
                       key={item.id}
-                      className="envelope-row"
+                      className={`envelope-row${item.status === "wiping" ? " is-wiping" : ""}`}
                       style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
                     >
-                      <div>
+                      <div className="envelope-row-main">
                         <h3>{item.file.name}</h3>
                         <div className="meta">
                           {kindLabel(item.file.name)} · {formatSize(item.file.size)}
-                          {item.engine ? ` · ${item.engine}` : ""}
+                          {item.status === "wiping" ? ` · ${item.step} · ${item.progress}%` : ""}
+                          {item.status === "queued" ? " · waiting in order" : ""}
+                          {item.engine && item.status === "ready" ? ` · ${item.engine}` : ""}
                           {item.status === "error" ? ` · ${item.error}` : ""}
                         </div>
-                        {item.status === "wiping" ? <span className="wipe-bar" /> : null}
+                        {(item.status === "queued" || item.status === "wiping") && (
+                          <div
+                            className="file-progress"
+                            role="progressbar"
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={item.progress}
+                            aria-label={`${item.file.name} ${item.step}`}
+                          >
+                            <span style={{ width: `${item.progress}%` }} />
+                          </div>
+                        )}
                       </div>
                       <div className="envelope-row-actions">
                         <span className={badge.className}>{badge.label}</span>
@@ -319,7 +484,12 @@ export function StripApp() {
                           </a>
                         ) : null}
                         {item.status === "error" ? (
-                          <button type="button" className="btn secondary" onClick={() => void wipeOne(item)}>
+                          <button
+                            type="button"
+                            className="btn secondary"
+                            onClick={() => retry(item)}
+                            disabled={running}
+                          >
                             Retry
                           </button>
                         ) : null}
@@ -348,7 +518,8 @@ export function StripApp() {
 
         <footer className="page-foot">
           <p className="muted">
-            Share this page: <span style={{ color: "var(--ink)", wordBreak: "break-all" }}>{share || "this link"}</span>
+            Share this page:{" "}
+            <span style={{ color: "var(--ink)", wordBreak: "break-all" }}>{share || "this link"}</span>
           </p>
           <p className="muted">
             Do not upload files you are not allowed to handle. The wipe removes hidden
@@ -356,6 +527,12 @@ export function StripApp() {
           </p>
         </footer>
       </main>
+
+      {toast !== "off" ? (
+        <div className={`save-status ${toast === "saving" ? "saving" : "saved"}`} role="status">
+          {toastLabel}
+        </div>
+      ) : null}
     </div>
   );
 }
