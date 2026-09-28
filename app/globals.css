@@ -423,6 +423,39 @@ a.btn {
   min-width: 0;
 }
 
+.finding-list {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: #e8ecf0;
+  color: #5a6570;
+}
+
+.finding-chip.is-cleared {
+  background: #d8efe0;
+  color: var(--ok);
+}
+
+.finding-tick {
+  display: block;
+  flex-shrink: 0;
+}
+
 .file-progress {
   height: 6px;
   margin-top: 0.65rem;

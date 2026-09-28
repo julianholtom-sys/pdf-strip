@@ -1,7 +1,9 @@
 "use client";
 
+import { inspectBytes, type Finding } from "@/lib/inspect";
 import { filenameForPaste, kindFromName, mimeForKind } from "@/lib/kinds";
 import { stripInBrowser } from "@/lib/strip-fallback";
+import JSZip from "jszip";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Status = "queued" | "wiping" | "ready" | "error";
@@ -12,6 +14,7 @@ type Item = {
   status: Status;
   step: string;
   progress: number;
+  findings?: Finding[];
   error?: string;
   url?: string;
   engine?: string;
@@ -84,6 +87,21 @@ function nativeApiAllowed() {
   return !window.location.hostname.endsWith("github.io");
 }
 
+function Tick() {
+  return (
+    <svg className="finding-tick" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <path
+        d="M3.2 8.2 6.4 11.3 12.8 4.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function BrandMark() {
   return (
     <svg
@@ -122,6 +140,7 @@ export function StripApp() {
   const [hover, setHover] = useState(false);
   const [share, setShare] = useState("");
   const [running, setRunning] = useState(false);
+  const [packing, setPacking] = useState(false);
   const [cursor, setCursor] = useState({ i: 0, n: 0 });
   const [toast, setToast] = useState<"off" | "saving" | "saved">("off");
 
@@ -290,6 +309,22 @@ export function StripApp() {
       progress: 0,
     }));
     setItems((current) => [...current, ...next]);
+    for (const item of next) void readFindings(item);
+  }
+
+  async function readFindings(item: Item) {
+    try {
+      const kind = kindFromName(item.file.name, item.file.type);
+      if (!kind) {
+        patchItem(item.id, { findings: [] });
+        return;
+      }
+      const bytes = new Uint8Array(await item.file.arrayBuffer());
+      const findings = await inspectBytes(kind, bytes);
+      patchItem(item.id, { findings });
+    } catch {
+      patchItem(item.id, { findings: [] });
+    }
   }
 
   addFilesRef.current = addFiles;
@@ -319,13 +354,37 @@ export function StripApp() {
     setItems([]);
   }
 
-  function downloadAll() {
-    for (const item of items) {
-      if (!item.url) continue;
+  async function downloadAll() {
+    const ready = items.filter((item) => item.status === "ready" && item.url);
+    if (!ready.length) return;
+    setPacking(true);
+    try {
+      const zip = new JSZip();
+      const used = new Set<string>();
+      for (const item of ready) {
+        const response = await fetch(item.url!);
+        const buffer = await response.arrayBuffer();
+        let name = item.file.name || "file";
+        if (used.has(name)) {
+          const split = name.lastIndexOf(".");
+          const base = split === -1 ? name : name.slice(0, split);
+          const ext = split === -1 ? "" : name.slice(split);
+          let n = 2;
+          while (used.has(`${base}-${n}${ext}`)) n += 1;
+          name = `${base}-${n}${ext}`;
+        }
+        used.add(name);
+        zip.file(name, buffer);
+      }
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = item.url;
-      link.download = item.file.name;
+      link.href = href;
+      link.download = "pdf-strip-clean.zip";
       link.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 2000);
+    } finally {
+      setPacking(false);
     }
   }
 
@@ -396,9 +455,18 @@ export function StripApp() {
           >
             Choose files
           </button>
-          {readyCount > 1 ? (
-            <button type="button" className="btn" onClick={downloadAll}>
-              Download all
+          {items.length > 1 ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void downloadAll()}
+              disabled={readyCount === 0 || packing || running}
+            >
+              {packing
+                ? "Packing…"
+                : readyCount > 1
+                  ? `Download all (${readyCount})`
+                  : "Download all"}
             </button>
           ) : null}
           {items.length > 0 ? (
@@ -494,9 +562,50 @@ export function StripApp() {
                           </button>
                         ) : null}
                       </div>
+                      <ul className="finding-list">
+                        {item.findings === undefined ? (
+                          <li className="finding-chip">Checking tags…</li>
+                        ) : item.findings.length === 0 ? (
+                          <li className={`finding-chip${item.status === "ready" ? " is-cleared" : ""}`}>
+                            {item.status === "ready" ? <Tick /> : null}
+                            {item.status === "ready" ? "Wipe complete" : "No obvious tags"}
+                          </li>
+                        ) : (
+                          item.findings.map((finding) => (
+                            <li
+                              key={finding.id}
+                              className={`finding-chip${item.status === "ready" ? " is-cleared" : ""}`}
+                            >
+                              {item.status === "ready" ? <Tick /> : null}
+                              {finding.label}
+                            </li>
+                          ))
+                        )}
+                      </ul>
                     </div>
                   );
                 })}
+              </div>
+            ) : null}
+            {items.length > 1 ? (
+              <div className="toolbar" style={{ marginTop: "0.85rem" }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void downloadAll()}
+                  disabled={readyCount === 0 || packing || running}
+                >
+                  {packing
+                    ? "Packing…"
+                    : readyCount > 1
+                      ? `Download all (${readyCount})`
+                      : "Download all"}
+                </button>
+                <span className="muted">
+                  {readyCount === 0
+                    ? "Wipe first, then this packs every clean file into one zip"
+                    : "One zip with every clean file"}
+                </span>
               </div>
             ) : null}
           </section>
