@@ -58,6 +58,42 @@ function normalizeFiles(list: FileList | File[]) {
     .filter((file): file is File => Boolean(file));
 }
 
+function badgeFor(status: Status) {
+  if (status === "ready") return { className: "badge completed", label: "Clean" };
+  if (status === "wiping") return { className: "badge wiping", label: "Wiping" };
+  if (status === "error") return { className: "badge error", label: "Failed" };
+  return { className: "badge queued", label: "Queued" };
+}
+
+function BrandMark() {
+  return (
+    <svg
+      className="brand-logo"
+      viewBox="0 0 36 36"
+      width={36}
+      height={36}
+      aria-hidden="true"
+    >
+      <rect width="36" height="36" rx="8" fill="#0074FF" />
+      <path d="M11 9h9.4L25 13.4V27H11Z" fill="#fff" />
+      <path
+        d="M20.4 9V13.4H25"
+        fill="none"
+        stroke="#dceaff"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13.4 17.2h9.2M13.4 20.2h9.2"
+        stroke="#0074FF"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+      <path d="M9 24h18" stroke="#0047a3" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function StripApp() {
   const inputRef = useRef<HTMLInputElement>(null);
   const addFilesRef = useRef<(list: FileList | File[]) => void>(() => {});
@@ -73,10 +109,10 @@ export function StripApp() {
   const busy = items.some((item) => item.status === "wiping");
 
   const headline = useMemo(() => {
-    if (!items.length) return "Drop the file. It comes back without a past.";
-    if (busy) return "Wiping fingerprints from the file.";
-    if (readyCount === items.length) return "Clean. Same name. Yours to take.";
-    return "Leave nothing on the page but the page.";
+    if (!items.length) return "Strip metadata";
+    if (busy) return "Wiping files";
+    if (readyCount === items.length) return "Clean copies ready";
+    return "Strip metadata";
   }, [busy, items.length, readyCount]);
 
   async function wipeClient(file: File) {
@@ -131,8 +167,7 @@ export function StripApp() {
             ? {
                 ...row,
                 status: "error",
-                error:
-                  error instanceof Error ? error.message : "The wipe failed.",
+                error: error instanceof Error ? error.message : "The wipe failed.",
               }
             : row,
         ),
@@ -189,47 +224,49 @@ export function StripApp() {
   }
 
   return (
-    <div className="crop crop-bottom min-h-dvh px-5 py-8 sm:px-10 sm:py-12">
-      <div className="mx-auto flex min-h-[calc(100dvh-4rem)] w-full max-w-5xl flex-col">
-        <header className="flex flex-col gap-3 border-b border-rule pb-5 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
-          <p className="font-serif text-sm tracking-[0.28em] whitespace-nowrap text-wax uppercase">
-            PDF-Strip
-          </p>
-          <p className="max-w-sm text-xs leading-5 text-muted sm:text-right">
-            Unlisted on purpose. Anyone with this link can use it.
-          </p>
-        </header>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <BrandMark />
+          <span className="brand-copy">
+            <span className="brand-mark">PDF-Strip</span>
+            <span className="brand-sub">Metadata wipe</span>
+          </span>
+        </div>
+        <nav className="nav-links">
+          <span className="muted">Unlisted · anyone with the link</span>
+        </nav>
+      </header>
 
-        <main className="flex flex-1 flex-col gap-10 py-10 lg:flex-row lg:items-start lg:gap-16">
-          <section className="lg:w-[42%]">
-            <p className="text-[11px] tracking-[0.22em] text-muted uppercase">
-              Metadata · EXIF · C2PA
-            </p>
-            <h1 className="mt-4 font-serif text-4xl leading-[1.12] text-ink sm:text-5xl">
-              {headline}
-            </h1>
-            <p className="mt-5 max-w-md text-[15px] leading-7 text-muted">
-              PDFs, photos, and Word files. Author names, dates, software
-              stamps, EXIF, and Content Credentials are stripped. Colour
-              profiles stay so the page still looks like itself.
-            </p>
-            <ul className="mt-8 space-y-3 text-sm text-ink">
-              <li className="flex gap-3">
-                <span className="mt-2 block h-1.5 w-1.5 shrink-0 rounded-full bg-wax" />
-                Files are wiped in memory, then discarded. Nothing is kept.
-              </li>
-              <li className="flex gap-3">
-                <span className="mt-2 block h-1.5 w-1.5 shrink-0 rounded-full bg-wax" />
-                The download uses the original filename, ready to put back.
-              </li>
-              <li className="flex gap-3">
-                <span className="mt-2 block h-1.5 w-1.5 shrink-0 rounded-full bg-wax" />
-                Same engine as the desktop tool: ExifTool, then a full rewrite.
-              </li>
-            </ul>
-          </section>
+      <main className="main">
+        <section className="hero-panel">
+          <h1>{headline}</h1>
+          <p>
+            Drop a PDF, photo, or Word file. Author names, dates, software stamps,
+            EXIF, and Content Credentials are stripped. Colour profiles stay so the
+            page still looks like itself.
+          </p>
+        </section>
 
-          <section className="flex-1">
+        <div className="toolbar">
+          <button type="button" className="btn" onClick={() => inputRef.current?.click()}>
+            Choose files
+          </button>
+          {readyCount > 1 ? (
+            <button type="button" className="btn" onClick={downloadAll}>
+              Download all
+            </button>
+          ) : null}
+          {items.length > 0 ? (
+            <button type="button" className="btn secondary" onClick={clearAll}>
+              Clear
+            </button>
+          ) : null}
+          <span className="muted">PDF, JPEG, PNG, DOCX · 32 MB each · paste several at once</span>
+        </div>
+
+        <div className="split">
+          <section>
             <label
               onDragEnter={(event) => {
                 event.preventDefault();
@@ -238,109 +275,87 @@ export function StripApp() {
               onDragOver={(event) => event.preventDefault()}
               onDragLeave={() => setHover(false)}
               onDrop={onDrop}
-              className={`block cursor-pointer rounded-[2px] border border-dashed px-6 py-14 text-center transition-colors ${
-                hover
-                  ? "border-wax bg-wax/10"
-                  : "border-rule bg-ticket/70 hover:border-wax/70"
-              }`}
+              className={`drop-slot${hover ? " is-hover" : ""}`}
             >
               <input
                 ref={inputRef}
+                className="file-slot-input"
                 type="file"
                 accept={ACCEPT}
                 multiple
-                className="sr-only"
                 onChange={(event) => {
                   if (event.target.files?.length) addFiles(event.target.files);
                   event.target.value = "";
                 }}
               />
-              <p className="font-serif text-2xl text-ink">Drop or paste files</p>
-              <p className="mt-2 text-sm text-muted">
-                several at once · PDF, JPEG, PNG, DOCX · 32 MB each
-              </p>
+              <strong>Drop or paste files</strong>
+              <span>several at once · nothing is stored</span>
             </label>
 
-            {items.length > 0 && (
-              <div className="mt-6">
-                <div className="mb-3 flex items-center justify-between gap-3 text-xs tracking-[0.16em] text-muted uppercase">
-                  <span>
-                    {readyCount}/{items.length} clean
-                  </span>
-                  <span className="flex gap-4">
-                    {readyCount > 1 && (
-                      <button
-                        type="button"
-                        onClick={downloadAll}
-                        className="text-wax hover:text-wax-deep"
-                      >
-                        Download all
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={clearAll}
-                      className="hover:text-ink"
-                    >
-                      Clear
-                    </button>
-                  </span>
-                </div>
-                <ul className="space-y-2">
-                  {items.map((item) => (
-                    <li
+            {items.length > 0 ? (
+              <div className="envelope-list">
+                {items.map((item, index) => {
+                  const badge = badgeFor(item.status);
+                  return (
+                    <div
                       key={item.id}
-                      className="flex items-center gap-4 border border-rule bg-ticket px-4 py-3"
+                      className="envelope-row"
+                      style={{ animationDelay: `${Math.min(index, 8) * 0.04}s` }}
                     >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium">{item.file.name}</p>
-                        <p className="mt-0.5 text-xs text-muted">
+                      <div>
+                        <h3>{item.file.name}</h3>
+                        <div className="meta">
                           {kindLabel(item.file.name)} · {formatSize(item.file.size)}
                           {item.engine ? ` · ${item.engine}` : ""}
-                          {item.status === "wiping" ? " · wiping" : ""}
                           {item.status === "error" ? ` · ${item.error}` : ""}
-                        </p>
-                        {item.status === "wiping" && (
-                          <span className="wipe-bar mt-2 block h-px bg-wax" />
-                        )}
+                        </div>
+                        {item.status === "wiping" ? <span className="wipe-bar" /> : null}
                       </div>
-                      {item.status === "ready" && item.url && (
-                        <a
-                          href={item.url}
-                          download={item.file.name}
-                          className="shrink-0 bg-ink px-3 py-2 text-xs tracking-[0.14em] text-paper uppercase hover:bg-wax"
-                        >
-                          Download
-                        </a>
-                      )}
-                      {item.status === "error" && (
-                        <button
-                          type="button"
-                          onClick={() => void wipeOne(item)}
-                          className="shrink-0 border border-wax px-3 py-2 text-xs tracking-[0.14em] text-wax uppercase"
-                        >
-                          Retry
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                      <div className="envelope-row-actions">
+                        <span className={badge.className}>{badge.label}</span>
+                        {item.status === "ready" && item.url ? (
+                          <a className="btn" href={item.url} download={item.file.name}>
+                            Download
+                          </a>
+                        ) : null}
+                        {item.status === "error" ? (
+                          <button type="button" className="btn secondary" onClick={() => void wipeOne(item)}>
+                            Retry
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            )}
+            ) : null}
           </section>
-        </main>
 
-        <footer className="mt-auto border-t border-rule pt-5 text-xs leading-5 text-muted">
-          <p>
-            Share this page:{" "}
-            <span className="break-all text-ink">{share || "this link"}</span>
+          <aside className="panel">
+            <h2>What it removes</h2>
+            <ul>
+              <li>Author, creator, dates, and software stamps</li>
+              <li>EXIF on photos, plus JPEG comments</li>
+              <li>Content Credentials and C2PA attachments</li>
+              <li>Word document properties and custom tags</li>
+            </ul>
+            <p className="muted" style={{ margin: "0.9rem 0 0" }}>
+              Files are wiped in memory, then discarded. The download keeps the
+              original filename, ready to put back.
+            </p>
+          </aside>
+        </div>
+
+        <footer className="page-foot">
+          <p className="muted">
+            Share this page: <span style={{ color: "var(--ink)", wordBreak: "break-all" }}>{share || "this link"}</span>
           </p>
-          <p className="mt-1">
-            Do not upload files you are not allowed to handle. The wipe removes
-            hidden tags; it does not redact what is printed on the page.
+          <p className="muted">
+            Do not upload files you are not allowed to handle. The wipe removes hidden
+            tags; it does not redact what is printed on the page.
           </p>
         </footer>
-      </div>
+      </main>
     </div>
   );
 }
