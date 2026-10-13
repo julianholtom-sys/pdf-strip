@@ -7,6 +7,9 @@ const LABELLED_CRN_RE =
 const POSTCODE_RE = /\b([A-Z]{1,2}[0-9][0-9A-Z]?[ ]?[0-9][A-Z]{2})\b/gi;
 const NAME_RE =
   /\b([A-Z][A-Za-z0-9&.'’\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'’\-]{1,40}){0,6}\s+(?:Limited|LIMITED|Ltd\.?|LTD\.?|LLP|PLC|Plc|C\.?I\.?C\.?))\b/g;
+const COMPANY_SUFFIX_RE = /(?:Limited|LIMITED|Ltd\.?|LTD\.?|LLP|PLC|Plc|C\.?I\.?C\.?)\s*$/;
+const LEADING_LABEL_RE =
+  /^(NAME|PARTIES|PARTY|SUPPLIER|CLIENT|CUSTOMER|CONTACT|BETWEEN|SCHEDULE|REGISTERED)\b/i;
 
 function unique(values: string[]) {
   const seen = new Set<string>();
@@ -20,6 +23,39 @@ function unique(values: string[]) {
     out.push(key);
   }
   return out;
+}
+
+function uniqueCompanyNames(values: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const name = tidyCompanyName(value);
+    if (!looksLikeCompanyName(name)) continue;
+    const folded = foldCompanyText(name);
+    if (!folded || seen.has(folded)) continue;
+    seen.add(folded);
+    out.push(name);
+  }
+  return out;
+}
+
+export function tidyCompanyName(value: string) {
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  const match = trimmed.match(
+    /((?:[A-Z][A-Za-z0-9&.'’\-]+\s+)+?(?:Limited|LIMITED|Ltd\.?|LTD\.?|LLP|PLC|Plc|C\.?I\.?C\.?))$/,
+  );
+  const parts = (match?.[1] || trimmed).split(/\s+/);
+  while (parts.length > 2 && LEADING_LABEL_RE.test(parts[0])) parts.shift();
+  return parts.join(" ");
+}
+
+function looksLikeCompanyName(value: string) {
+  if (!COMPANY_SUFFIX_RE.test(value)) return false;
+  if (/\b(liability|cannot|lawfully|agreement|schedule|hereby|whereas|thereof|unless)\b/i.test(value)) {
+    return false;
+  }
+  const words = value.split(/\s+/).filter(Boolean);
+  return words.length >= 2 && words.length <= 8;
 }
 
 function isPlausibleCrn(value: string) {
@@ -80,7 +116,7 @@ export function extractCompanyFields(text: string, fileName = ""): ExtractedComp
   const labelled = captures(text, LABELLED_CRN_RE).filter(isPlausibleCrn);
   const loose = captures(text, CRN_RE, 1).filter(isPlausibleCrn);
   const numbers = unique([...labelled, ...loose].map((value) => value.toUpperCase()));
-  const names = unique(captures(text, NAME_RE, 1));
+  const names = uniqueCompanyNames(captures(text, NAME_RE, 1));
   const postcodes = unique(captures(text, POSTCODE_RE, 1).map((value) => value.toUpperCase()));
 
   const directors = unique(
@@ -113,14 +149,13 @@ export function extractCompanyFields(text: string, fileName = ""): ExtractedComp
 
   if (fileName) {
     const fromFile = fileName.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ");
-    const maybe = fromFile.match(NAME_RE);
-    if (maybe?.[1]) names.push(maybe[1]);
+    names.push(...captures(fromFile, NAME_RE, 1));
   }
 
   return {
     fileName,
     numbers,
-    names: unique(names),
+    names: uniqueCompanyNames(names),
     postcodes,
     addressHints,
     directors,

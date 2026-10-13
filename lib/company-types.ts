@@ -38,6 +38,9 @@ export type CompanyRecord = {
   companyNumber: string;
   companyName: string;
   companyStatus: string;
+  companyStatusDetail?: string;
+  live: boolean;
+  statusLabel: string;
   address: string;
   addressLines: string[];
   postalCode: string;

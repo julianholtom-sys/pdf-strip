@@ -35,7 +35,7 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
         <h2 id="ch-check-title">{title}</h2>
         <p className="muted">
           {blocking.length
-            ? "Wipe is blocked on these files until the registered details match Companies House, or you apply the official record."
+            ? "Wipe is blocked until every named company is live at Companies House and the registered details match, or you apply the official record."
             : "A signatory does not match a current Companies House officer. Confirm they are authorised if you want to wipe."}
         </p>
         <div className="modal-list">
@@ -46,6 +46,7 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
                 (company) => (
                   <p key={company.companyNumber} className="muted">
                     {company.companyName} · {company.companyNumber}
+                    {company.statusLabel ? ` · ${company.statusLabel}` : ""}
                     {company.address ? ` · ${company.address}` : ""}
                   </p>
                 ),
@@ -69,8 +70,8 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
         </div>
         {!canProceed ? (
           <p className="muted">
-            Director, status, or missing-company issues cannot be rewritten automatically.
-            Correct the source file, then check again. Signatures are never drawn on.
+            Director, liquidation, dissolved, or missing-company issues cannot be rewritten
+            automatically. Correct the source file, then check again. Signatures are never drawn on.
           </p>
         ) : (
           <p className="muted">

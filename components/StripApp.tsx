@@ -1059,9 +1059,10 @@ export function StripApp() {
               <li>Word document properties and custom tags</li>
             </ul>
             <p className="muted" style={{ margin: "0.9rem 0 0" }}>
-              Wipe is for every file. Tick Companies House on invoices or contracts. Tick Bill
-              on energy or water bills to check the MPAN, MPRN or SPID against the printed
-              address. Files stay in memory, then are discarded.
+              Wipe is for every file. Tick Companies House on invoices or contracts to confirm
+              every named company is live and officers match. Tick Bill on energy or water
+              bills to check the MPAN, MPRN or SPID against the printed address. Files stay in
+              memory, then are discarded.
             </p>
           </aside>
         </div>
