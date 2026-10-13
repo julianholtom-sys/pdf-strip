@@ -1,5 +1,10 @@
 "use client";
 
+import { CompanyCheckModal } from "@/components/CompanyCheckModal";
+import { applyCompanyFixes } from "@/lib/company-fix";
+import { extractCompanyFields } from "@/lib/company-parse";
+import type { CheckResult, TextRun } from "@/lib/company-types";
+import { extractDocument } from "@/lib/extract-document";
 import { inspectBytes, type Finding } from "@/lib/inspect";
 import { filenameForPaste, kindFromName, mimeForKind } from "@/lib/kinds";
 import { stripInBrowser } from "@/lib/strip-fallback";
@@ -18,6 +23,9 @@ type Item = {
   error?: string;
   url?: string;
   engine?: string;
+  companyCheck?: CheckResult;
+  wipeBlocked?: boolean;
+  needsCompanyCheck?: boolean;
 };
 
 const ACCEPT =
@@ -67,10 +75,28 @@ function normalizeFiles(list: FileList | File[]) {
     .filter((file): file is File => Boolean(file));
 }
 
-function badgeFor(status: Status) {
-  if (status === "ready") return { className: "badge completed", label: "Clean" };
-  if (status === "wiping") return { className: "badge wiping", label: "Wiping" };
-  if (status === "error") return { className: "badge error", label: "Failed" };
+function isCompanyDoc(item: Item) {
+  const kind = kindFromName(item.file.name, item.file.type);
+  return kind === "pdf" || kind === "docx";
+}
+
+function isWipeable(item: Item) {
+  if (item.status !== "queued") return false;
+  if (!item.needsCompanyCheck) return true;
+  return Boolean(item.companyCheck?.ok) && !item.wipeBlocked;
+}
+
+function badgeFor(item: Item) {
+  if (item.wipeBlocked && item.needsCompanyCheck) {
+    return { className: "badge blocked", label: "Blocked" };
+  }
+  if (item.status === "ready") return { className: "badge completed", label: "Clean" };
+  if (item.status === "wiping") return { className: "badge wiping", label: "Wiping" };
+  if (item.status === "error") return { className: "badge error", label: "Failed" };
+  if (item.needsCompanyCheck && item.companyCheck?.ok) {
+    return { className: "badge completed", label: "Checked" };
+  }
+  if (item.needsCompanyCheck) return { className: "badge wiping", label: "CH" };
   return { className: "badge queued", label: "Ready" };
 }
 
@@ -143,6 +169,10 @@ export function StripApp() {
   const [packing, setPacking] = useState(false);
   const [cursor, setCursor] = useState({ i: 0, n: 0 });
   const [toast, setToast] = useState<"off" | "saving" | "saved">("off");
+  const [checking, setChecking] = useState(false);
+  const [applyingFixes, setApplyingFixes] = useState(false);
+  const [modalResults, setModalResults] = useState<CheckResult[] | null>(null);
+  const extractRef = useRef(new Map<string, { kind: "pdf" | "docx"; bytes: Uint8Array; runs: TextRun[] }>());
 
   useEffect(() => {
     setShare(window.location.href);
@@ -177,9 +207,11 @@ export function StripApp() {
   }, [items.length, running, cursor, queuedCount, readyCount]);
 
   function patchItem(id: string, partial: Partial<Item>) {
-    setItems((current) =>
-      current.map((row) => (row.id === id ? { ...row, ...partial } : row)),
-    );
+    setItems((current) => {
+      const next = current.map((row) => (row.id === id ? { ...row, ...partial } : row));
+      itemsRef.current = next;
+      return next;
+    });
   }
 
   function animateProgress(id: string, cancelled: { current: boolean }) {
@@ -278,10 +310,26 @@ export function StripApp() {
     }
   }
 
-  async function startWipe() {
+  async function startWipe(ids?: string[]) {
     if (runningRef.current) return;
-    const batch = itemsRef.current.filter((item) => item.status === "queued");
-    if (!batch.length) return;
+    const blocked = itemsRef.current.filter(
+      (item) =>
+        item.status === "queued" &&
+        item.needsCompanyCheck &&
+        item.wipeBlocked &&
+        (!ids || ids.includes(item.id)),
+    );
+    const batch = itemsRef.current.filter((item) => {
+      if (!isWipeable(item)) return false;
+      if (ids) return ids.includes(item.id);
+      return true;
+    });
+    if (!batch.length) {
+      if (blocked.length) {
+        setModalResults(blocked.map((item) => item.companyCheck).filter(Boolean) as CheckResult[]);
+      }
+      return;
+    }
     runningRef.current = true;
     setRunning(true);
     setCursor({ i: 0, n: batch.length });
@@ -297,6 +345,155 @@ export function StripApp() {
     }
   }
 
+  async function startCompanyCheck() {
+    if (runningRef.current || checking) return;
+    const batch = itemsRef.current.filter(
+      (item) => item.status === "queued" && item.needsCompanyCheck,
+    );
+    if (!batch.length) return;
+    setChecking(true);
+    try {
+      const payload: ReturnType<typeof extractCompanyFields>[] = [];
+      const skipped: CheckResult[] = [];
+      for (const item of batch) {
+        const kind = kindFromName(item.file.name, item.file.type);
+        if (kind !== "pdf" && kind !== "docx") {
+          skipped.push({
+            fileId: item.id,
+            fileName: item.file.name,
+            skipped: "This file type is not checked against Companies House.",
+            issues: [],
+            ok: true,
+          });
+          continue;
+        }
+        const bytes = new Uint8Array(await item.file.arrayBuffer());
+        const extracted = await extractDocument(kind, bytes);
+        extractRef.current.set(item.id, { kind, bytes, runs: extracted.runs });
+        payload.push({
+          ...extractCompanyFields(extracted.text, item.file.name),
+          fileId: item.id,
+        });
+      }
+      let checked: CheckResult[] = [...skipped];
+      if (payload.length) {
+        const response = await fetch("/api/companies-house", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documents: payload }),
+        });
+        const data = (await response.json()) as { results?: CheckResult[]; error?: string };
+        if (!response.ok) {
+          throw new Error(data.error || "Companies House check failed.");
+        }
+        checked = [...(data.results ?? []), ...skipped];
+      }
+      const byId = new Map(
+        checked.map((row) => [row.fileId || row.fileName, row] as const),
+      );
+      const nextItems = itemsRef.current.map((item) => {
+        const report = byId.get(item.id) || byId.get(item.file.name);
+        if (!report || item.status !== "queued" || !item.needsCompanyCheck) return item;
+        const blocked = report.issues.some((issue) => issue.severity === "error");
+        return {
+          ...item,
+          companyCheck: report,
+          wipeBlocked: blocked,
+          step: blocked ? "Companies House mismatch" : "Checked · ready to wipe",
+        };
+      });
+      itemsRef.current = nextItems;
+      setItems(nextItems);
+      const checkedIds = batch.map((item) => item.id);
+      const needsModal = checked.some((row) => row.issues.length > 0);
+      if (needsModal) {
+        setModalResults(checked);
+        return;
+      }
+      await startWipe(checkedIds);
+    } catch (error) {
+      setModalResults([
+        {
+          fileName: "Companies House",
+          ok: false,
+          issues: [
+            {
+              id: "lookup",
+              field: "lookup",
+              severity: "error",
+              message: error instanceof Error ? error.message : "The check failed.",
+            },
+          ],
+        },
+      ]);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function applyCheckAndWipe() {
+    if (runningRef.current) return;
+    const reports = modalResults;
+    if (!reports) return;
+    setApplyingFixes(true);
+    try {
+      const byId = new Map(
+        reports.map((row) => [row.fileId || row.fileName, row] as const),
+      );
+      for (const item of itemsRef.current) {
+        if (item.status !== "queued" || !item.needsCompanyCheck) continue;
+        const report = byId.get(item.id) || byId.get(item.file.name) || item.companyCheck;
+        if (!report) continue;
+        const errors = report.issues.filter((issue) => issue.severity === "error");
+        const unfixable = errors.some((issue) => !issue.fixable);
+        if (unfixable) continue;
+        const extracted = extractRef.current.get(item.id);
+        let file = item.file;
+        if (errors.some((issue) => issue.fixable) && extracted) {
+          const fixed = await applyCompanyFixes(
+            extracted.kind,
+            extracted.bytes,
+            report,
+            extracted.runs,
+          );
+          file = new File([new Uint8Array(fixed)], item.file.name, { type: item.file.type });
+          extractRef.current.set(item.id, {
+            ...extracted,
+            bytes: new Uint8Array(fixed),
+          });
+        }
+        patchItem(item.id, {
+          file,
+          wipeBlocked: false,
+          companyCheck: { ...report, issues: report.issues.filter((issue) => !issue.fixable), ok: true },
+          step: "Checked · ready to wipe",
+        });
+      }
+      const passedIds = itemsRef.current
+        .filter((item) => item.needsCompanyCheck && item.status === "queued" && !item.wipeBlocked)
+        .map((item) => item.id);
+      setModalResults(null);
+      await startWipe(passedIds);
+    } catch (error) {
+      setModalResults([
+        {
+          fileName: "Companies House",
+          ok: false,
+          issues: [
+            {
+              id: "lookup",
+              field: "lookup",
+              severity: "error",
+              message: error instanceof Error ? error.message : "The details could not be applied.",
+            },
+          ],
+        },
+      ]);
+    } finally {
+      setApplyingFixes(false);
+    }
+  }
+
   function addFiles(list: FileList | File[]) {
     if (runningRef.current) return;
     const allowed = normalizeFiles(list);
@@ -307,6 +504,7 @@ export function StripApp() {
       status: "queued",
       step: "Ready to wipe",
       progress: 0,
+      needsCompanyCheck: false,
     }));
     setItems((current) => [...current, ...next]);
     for (const item of next) void readFindings(item);
@@ -351,6 +549,8 @@ export function StripApp() {
     for (const item of items) {
       if (item.url) URL.revokeObjectURL(item.url);
     }
+    extractRef.current.clear();
+    setModalResults(null);
     setItems([]);
   }
 
@@ -397,6 +597,19 @@ export function StripApp() {
       error: undefined,
       url: undefined,
       engine: undefined,
+      wipeBlocked: false,
+      companyCheck: undefined,
+    });
+  }
+
+  function toggleCompanyCheck(item: Item) {
+    if (runningRef.current || item.status !== "queued" || !isCompanyDoc(item)) return;
+    const on = !item.needsCompanyCheck;
+    patchItem(item.id, {
+      needsCompanyCheck: on,
+      wipeBlocked: false,
+      companyCheck: undefined,
+      step: on ? "Companies House required" : "Ready to wipe",
     });
   }
 
@@ -409,8 +622,12 @@ export function StripApp() {
         ? `${readyCount} clean file${readyCount === 1 ? "" : "s"} ready`
         : "";
 
+  const wipeableCount = items.filter(isWipeable).length;
+  const companyCheckCount = items.filter(
+    (item) => item.status === "queued" && item.needsCompanyCheck,
+  ).length;
   const wipeLabel =
-    queuedCount === 1 ? "Wipe file" : `Wipe ${queuedCount} files`;
+    wipeableCount === 1 ? "Wipe file" : `Wipe ${wipeableCount} files`;
 
   return (
     <div className="app-shell">
@@ -430,16 +647,26 @@ export function StripApp() {
       <main className="main">
         <section className="hero-panel">
           <h1>{headline}</h1>
-          <p>
-            Add every file first. Press Wipe, and each one is stripped in order —
-            you will see it run from 0 to 100 before the next starts.
-          </p>
         </section>
 
         <div className="toolbar">
-          {queuedCount > 0 && !running ? (
+          {wipeableCount > 0 && !running ? (
             <button type="button" className="btn" onClick={() => void startWipe()}>
               {wipeLabel}
+            </button>
+          ) : null}
+          {companyCheckCount > 0 && !running ? (
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() => void startCompanyCheck()}
+              disabled={checking || applyingFixes}
+            >
+              {checking
+                ? "Checking Companies House…"
+                : companyCheckCount === 1
+                  ? "Check Companies House"
+                  : `Check Companies House (${companyCheckCount})`}
             </button>
           ) : null}
           {running ? (
@@ -508,14 +735,14 @@ export function StripApp() {
               <span>
                 {running
                   ? "this batch is locked until every file is done"
-                  : "add them all, then press Wipe files"}
+                  : "add them all, then wipe. Turn on Companies House only for invoices or contracts"}
               </span>
             </label>
 
             {items.length > 0 ? (
               <div className="envelope-list" aria-live="polite">
                 {items.map((item, index) => {
-                  const badge = badgeFor(item.status);
+                  const badge = badgeFor(item);
                   return (
                     <div
                       key={item.id}
@@ -527,7 +754,13 @@ export function StripApp() {
                         <div className="meta">
                           {kindLabel(item.file.name)} · {formatSize(item.file.size)}
                           {item.status === "wiping" ? ` · ${item.step} · ${item.progress}%` : ""}
-                          {item.status === "queued" ? " · waiting in order" : ""}
+                          {item.status === "queued" && item.needsCompanyCheck && item.wipeBlocked
+                            ? " · wipe blocked until company details match"
+                            : item.status === "queued" && item.needsCompanyCheck && !item.companyCheck
+                              ? " · Companies House required before wipe"
+                              : item.status === "queued"
+                                ? " · waiting in order"
+                                : ""}
                           {item.engine && item.status === "ready" ? ` · ${item.engine}` : ""}
                           {item.status === "error" ? ` · ${item.error}` : ""}
                         </div>
@@ -545,6 +778,20 @@ export function StripApp() {
                         )}
                       </div>
                       <div className="envelope-row-actions">
+                        {item.status === "queued" && isCompanyDoc(item) ? (
+                          <label
+                            className={`ch-toggle${item.needsCompanyCheck ? " is-on" : ""}`}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.needsCompanyCheck)}
+                              disabled={running || checking}
+                              onChange={() => toggleCompanyCheck(item)}
+                            />
+                            Companies House
+                          </label>
+                        ) : null}
                         <span className={badge.className}>{badge.label}</span>
                         {item.status === "ready" && item.url ? (
                           <a className="btn" href={item.url} download={item.file.name}>
@@ -619,8 +866,9 @@ export function StripApp() {
               <li>Word document properties and custom tags</li>
             </ul>
             <p className="muted" style={{ margin: "0.9rem 0 0" }}>
-              Files are wiped in memory, then discarded. The download keeps the
-              original filename, ready to put back.
+              Wipe is for every file. Tick Companies House only on invoices or contracts.
+              Bills, statements, and rental agreements can be wiped as they are. Files stay
+              in memory, then are discarded.
             </p>
           </aside>
         </div>
@@ -641,6 +889,14 @@ export function StripApp() {
         <div className={`save-status ${toast === "saving" ? "saving" : "saved"}`} role="status">
           {toastLabel}
         </div>
+      ) : null}
+      {modalResults ? (
+        <CompanyCheckModal
+          results={modalResults}
+          applying={applyingFixes}
+          onCancel={() => setModalResults(null)}
+          onProceed={() => void applyCheckAndWipe()}
+        />
       ) : null}
     </div>
   );

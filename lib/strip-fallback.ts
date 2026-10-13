@@ -1,5 +1,66 @@
-import { PDFDocument } from "pdf-lib";
+import {
+  PDFDict,
+  PDFDocument,
+  PDFHexString,
+  PDFName,
+  PDFStream,
+  PDFString,
+} from "pdf-lib";
 import JSZip from "jszip";
+
+const ZIP_EPOCH = new Date(Date.UTC(1980, 0, 1, 0, 0, 0));
+
+function latin1(bytes: Uint8Array) {
+  let out = "";
+  const limit = Math.min(bytes.length, 4_000_000);
+  for (let i = 0; i < limit; i += 1) out += String.fromCharCode(bytes[i]);
+  return out;
+}
+
+function looksLikePdfDate(value: unknown) {
+  const text =
+    value instanceof PDFString || value instanceof PDFHexString
+      ? value.decodeText()
+      : "";
+  return /^D:/.test(text);
+}
+
+function wipePdfDictDates(dict: PDFDict) {
+  dict.delete(PDFName.of("CreationDate"));
+  dict.delete(PDFName.of("ModDate"));
+  dict.delete(PDFName.of("Metadata"));
+  dict.delete(PDFName.of("PieceInfo"));
+  const marked = dict.get(PDFName.of("M"));
+  if (looksLikePdfDate(marked)) dict.delete(PDFName.of("M"));
+}
+
+function wipePdfInfo(doc: PDFDocument) {
+  for (const [, object] of doc.context.enumerateIndirectObjects()) {
+    if (object instanceof PDFDict) wipePdfDictDates(object);
+    if (object instanceof PDFStream) wipePdfDictDates(object.dict);
+  }
+  const infoRef = doc.context.trailerInfo.Info;
+  if (infoRef) {
+    const info = doc.context.lookup(infoRef);
+    if (info instanceof PDFDict) {
+      for (const key of info.keys()) info.delete(key);
+    }
+    delete doc.context.trailerInfo.Info;
+  }
+  doc.catalog.delete(PDFName.of("Metadata"));
+  doc.catalog.delete(PDFName.of("PieceInfo"));
+}
+
+function assertPdfDatesGone(bytes: Uint8Array) {
+  const text = latin1(bytes);
+  if (
+    text.includes("/CreationDate") ||
+    text.includes("/ModDate") ||
+    /xmp:(CreateDate|ModifyDate|MetadataDate)/i.test(text)
+  ) {
+    throw new Error("Date tags were still present after the PDF rewrite.");
+  }
+}
 
 function concat(parts: Uint8Array[]) {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
@@ -29,17 +90,13 @@ export async function stripPdfRewrite(
     updateMetadata: false,
   });
   onProgress?.(45);
-  const out = await PDFDocument.create();
+  const out = await PDFDocument.create({ updateMetadata: false });
   const pages = await out.copyPages(src, src.getPageIndices());
   for (const page of pages) out.addPage(page);
-  out.setTitle("");
-  out.setAuthor("");
-  out.setSubject("");
-  out.setKeywords([]);
-  out.setProducer("");
-  out.setCreator("");
+  wipePdfInfo(out);
   onProgress?.(75);
-  const saved = await out.save({ useObjectStreams: true });
+  const saved = await out.save({ useObjectStreams: false });
+  assertPdfDatesGone(saved);
   onProgress?.(95);
   return saved;
 }
@@ -73,7 +130,12 @@ export function stripJpegExif(bytes: Uint8Array) {
     }
     if (i + 1 >= bytes.length) break;
     const length = (bytes[i] << 8) | bytes[i + 1];
-    const drop = marker === 0xe1 || marker === 0xed || marker === 0xfe;
+    const drop =
+      marker === 0xe1 ||
+      marker === 0xe3 ||
+      marker === 0xec ||
+      marker === 0xed ||
+      marker === 0xfe;
     if (!drop) {
       chunks.push(Uint8Array.of(0xff, marker), bytes.subarray(i, i + length));
     }
@@ -116,7 +178,7 @@ export async function stripDocx(
   onProgress?.(20);
   const zip = await JSZip.loadAsync(bytes);
   onProgress?.(40);
-  zip.file("docProps/core.xml", EMPTY_CORE);
+  zip.file("docProps/core.xml", EMPTY_CORE, { date: ZIP_EPOCH });
   zip.remove("docProps/custom.xml");
 
   const relsFile = zip.file("_rels/.rels");
@@ -157,6 +219,10 @@ export async function stripDocx(
     if (!file) continue;
     const image = new Uint8Array(await file.async("uint8array"));
     zip.file(name, stripJpegExif(image));
+  }
+
+  for (const file of Object.values(zip.files)) {
+    file.date = ZIP_EPOCH;
   }
 
   onProgress?.(80);

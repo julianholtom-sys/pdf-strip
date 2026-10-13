@@ -15,6 +15,7 @@ const nextConfig: NextConfig = {
   assetPrefix: isPages ? "/pdf-strip" : undefined,
   trailingSlash: isPages ? true : undefined,
   images: { unoptimized: isPages },
+  transpilePackages: ["pdfjs-dist"],
   allowedDevOrigins: tunnelHosts,
   experimental: {
     proxyClientMaxBodySize: "40mb",
