@@ -350,6 +350,15 @@ export async function checkExtractedDocument(
     }
   };
 
+  if (!extracted.numbers.length && !extracted.names.length) {
+    return {
+      fileId: extracted.fileId,
+      fileName: extracted.fileName,
+      issues: [],
+      ok: true,
+    };
+  }
+
   const orderedNumbers = uniqueNumbers(extracted.numbers).slice(0, 8);
   const loadedRows = await Promise.all(
     orderedNumbers.map(async (number) => {
@@ -394,21 +403,8 @@ export async function checkExtractedDocument(
     });
   }
 
-  if (!companies.length && !issues.length) {
-    return {
-      fileId: extracted.fileId,
-      fileName: extracted.fileName,
-      issues: [
-        {
-          id: "lookup",
-          field: "lookup",
-          severity: "error",
-          message: "No UK company number or recognisable company name was found to look up.",
-          correction: "Add the registered company name and number as they appear on Companies House.",
-        },
-      ],
-      ok: false,
-    };
+  if (!companies.length) {
+    return { fileId: extracted.fileId, fileName: extracted.fileName, issues, ok: false };
   }
 
   const compared = [...issues, ...compare(extracted, companies)];
