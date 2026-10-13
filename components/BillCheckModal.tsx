@@ -1,5 +1,5 @@
 import type { BillCheckResult } from "@/lib/bill-types";
-import { primaryIssue } from "@/lib/primary-issue";
+import { uniqueIssues } from "@/lib/primary-issue";
 
 type Props = {
   results: BillCheckResult[];
@@ -9,11 +9,12 @@ type Props = {
 
 export function BillCheckModal({ results, onCancel, onProceed }: Props) {
   const blocking = results.filter((row) => row.issues.some((issue) => issue.severity === "error"));
-  const shown = results
-    .map((row) => ({ row, issue: primaryIssue(row.issues) }))
-    .filter((entry) => entry.issue);
+  const files = results
+    .map((row) => ({ row, issues: uniqueIssues(row.issues) }))
+    .filter((entry) => entry.issues.length);
   const canProceed = results.every((row) => !row.issues.some((issue) => issue.severity === "error"));
   const title = blocking.length ? "Bill details need addressing" : "Confirm before wiping";
+  const blockedLabel = files.length > 1 ? "these files are" : "this file is";
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onCancel}>
@@ -26,18 +27,22 @@ export function BillCheckModal({ results, onCancel, onProceed }: Props) {
       >
         <h2 id="bill-check-title">{title}</h2>
         <div className="modal-list">
-          {shown.length ? (
-            shown.slice(0, 1).map(({ row, issue }) => (
+          {files.length ? (
+            files.map(({ row, issues }) => (
               <section key={row.fileId || row.fileName} className="modal-file">
                 <h3>{row.fileName}</h3>
-                <p className={issue?.severity === "error" ? "issue-error" : "issue-warning"}>
-                  {issue?.message}
-                </p>
-                {issue?.correction ? (
-                  <p className="issue-fix">
-                    <strong>Correction:</strong> {issue.correction}
-                  </p>
-                ) : null}
+                {issues.map((issue) => (
+                  <div key={issue.id} className="issue-block">
+                    <p className={issue.severity === "error" ? "issue-error" : "issue-warning"}>
+                      {issue.message}
+                    </p>
+                    {issue.correction ? (
+                      <p className="issue-fix">
+                        <strong>Correction:</strong> {issue.correction}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
               </section>
             ))
           ) : (
@@ -46,8 +51,8 @@ export function BillCheckModal({ results, onCancel, onProceed }: Props) {
         </div>
         {!canProceed ? (
           <p className="muted">
-            Only this file is blocked. Other files that passed have been cleaned. Correct this
-            bill, then check again.
+            Only {blockedLabel} blocked. Other files that passed have been cleaned. Correct the
+            source, then check again.
           </p>
         ) : (
           <p className="muted">

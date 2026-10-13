@@ -1,5 +1,5 @@
 import type { CheckResult } from "@/lib/company-types";
-import { primaryIssue } from "@/lib/primary-issue";
+import { uniqueIssues } from "@/lib/primary-issue";
 
 type Props = {
   results: CheckResult[];
@@ -10,15 +10,15 @@ type Props = {
 
 export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Props) {
   const blocking = results.filter((row) => row.issues.some((issue) => issue.severity === "error"));
-  const shown = results
-    .map((row) => ({ row, issue: primaryIssue(row.issues) }))
-    .filter((entry) => entry.issue);
-  const primary = shown[0]?.issue;
-  const fixable = Boolean(primary?.fixable && primary.expected);
+  const files = results
+    .map((row) => ({ row, issues: uniqueIssues(row.issues) }))
+    .filter((entry) => entry.issues.length);
   const canProceed = results.some((row) => {
     const errors = row.issues.filter((issue) => issue.severity === "error");
     return errors.length === 0 || errors.every((issue) => issue.fixable);
   });
+  const fixable =
+    canProceed && results.some((row) => row.issues.some((issue) => issue.fixable && issue.expected));
   const title = blocking.length
     ? "Company details need addressing"
     : "Confirm before wiping";
@@ -27,6 +27,7 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
     : fixable
       ? "Apply Companies House details and wipe"
       : "Confirm and wipe";
+  const blockedLabel = files.length > 1 ? "these files are" : "this file is";
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onCancel}>
@@ -39,18 +40,22 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
       >
         <h2 id="ch-check-title">{title}</h2>
         <div className="modal-list">
-          {shown.length ? (
-            shown.slice(0, 1).map(({ row, issue }) => (
+          {files.length ? (
+            files.map(({ row, issues }) => (
               <section key={row.fileId || row.fileName} className="modal-file">
                 <h3>{row.fileName}</h3>
-                <p className={issue?.severity === "error" ? "issue-error" : "issue-warning"}>
-                  {issue?.message}
-                </p>
-                {issue?.correction ? (
-                  <p className="issue-fix">
-                    <strong>Correction:</strong> {issue.correction}
-                  </p>
-                ) : null}
+                {issues.map((issue) => (
+                  <div key={issue.id} className="issue-block">
+                    <p className={issue.severity === "error" ? "issue-error" : "issue-warning"}>
+                      {issue.message}
+                    </p>
+                    {issue.correction ? (
+                      <p className="issue-fix">
+                        <strong>Correction:</strong> {issue.correction}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
               </section>
             ))
           ) : (
@@ -59,8 +64,8 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
         </div>
         {!canProceed ? (
           <p className="muted">
-            Only this file is blocked. Other files that passed have been cleaned. Correct this
-            file, then check again. Signatures are never drawn on.
+            Only {blockedLabel} blocked. Other files that passed have been cleaned. Correct the
+            source, then check again. Signatures are never drawn on.
           </p>
         ) : fixable ? (
           <p className="muted">
