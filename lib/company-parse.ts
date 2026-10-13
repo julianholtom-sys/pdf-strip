@@ -6,7 +6,7 @@ const LABELLED_CRN_RE =
   /(?:company(?:\s+registration)?(?:\s+no(?:umber)?)?|registered\s+(?:no(?:umber)?|company)|co(?:mpany)?\.?\s*(?:reg(?:istration)?)?\.?\s*no\.?|crn)[:\s#No.]*([A-Z]{0,2}\d{6,8})/gi;
 const POSTCODE_RE = /\b([A-Z]{1,2}[0-9][0-9A-Z]?[ ]?[0-9][A-Z]{2})\b/gi;
 const NAME_RE =
-  /\b([A-Z][A-Za-z0-9&.'’\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'’\-]{1,40}){0,6}\s+(?:Limited|Ltd\.?|LLP|PLC|Plc|C\.?I\.?C\.?))\b/g;
+  /\b([A-Z][A-Za-z0-9&.'’\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'’\-]{1,40}){0,6}\s+(?:Limited|LIMITED|Ltd\.?|LTD\.?|LLP|PLC|Plc|C\.?I\.?C\.?))\b/g;
 
 function unique(values: string[]) {
   const seen = new Set<string>();
@@ -54,8 +54,11 @@ function tidyPerson(value: string) {
 function looksLikePerson(value: string) {
   if (!value || value.length < 4 || value.length > 60) return false;
   if (/\d/.test(value)) return false;
+  if (/\b(limited|ltd\.?|llp|plc|llc|cic|company|partnership)\b/i.test(value)) {
+    return false;
+  }
   const parts = value.split(" ").filter(Boolean);
-  return parts.length >= 2 && parts.length <= 5 && parts.every((part) => /^[A-Z][a-zA-Z'.-]+$/.test(part));
+  return parts.length >= 2 && parts.length <= 4 && parts.every((part) => /^[A-Z][a-zA-Z'.-]+$/.test(part));
 }
 
 export function foldCompanyText(value: string) {

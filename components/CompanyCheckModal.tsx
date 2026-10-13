@@ -42,12 +42,14 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
           {results.map((row) => (
             <section key={row.fileId || row.fileName} className="modal-file">
               <h3>{row.fileName}</h3>
-              {row.company ? (
-                <p className="muted">
-                  {row.company.companyName} · {row.company.companyNumber}
-                  {row.company.address ? ` · ${row.company.address}` : ""}
-                </p>
-              ) : null}
+              {(row.companies?.length ? row.companies : row.company ? [row.company] : []).map(
+                (company) => (
+                  <p key={company.companyNumber} className="muted">
+                    {company.companyName} · {company.companyNumber}
+                    {company.address ? ` · ${company.address}` : ""}
+                  </p>
+                ),
+              )}
               {row.skipped ? <p className="muted">{row.skipped}</p> : null}
               {row.issues.length === 0 && !row.skipped ? (
                 <p className="muted">Matches Companies House.</p>

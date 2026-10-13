@@ -49,6 +49,7 @@ export type CheckResult = {
   fileName: string;
   skipped?: string;
   company?: CompanyRecord;
+  companies?: CompanyRecord[];
   issues: Issue[];
   ok: boolean;
 };

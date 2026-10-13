@@ -124,96 +124,112 @@ async function searchCompany(name: string, key: string): Promise<string | null> 
   return result.data.items[0]?.company_number || null;
 }
 
-function compare(extracted: ExtractedCompany, company: CompanyRecord): Issue[] {
-  const issues: Issue[] = [];
-  if (company.companyStatus && company.companyStatus !== "active") {
-    issues.push({
-      id: "status",
-      field: "status",
-      severity: "error",
-      message: `Companies House lists this company as ${company.companyStatus}.`,
-      found: company.companyStatus,
-      expected: "active",
-    });
+function uniqueNumbers(values: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const key = value.toUpperCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
   }
+  return out;
+}
 
-  const numbers = extracted.numbers.map((value) => value.toUpperCase());
-  if (!numbers.length) {
-    issues.push({
-      id: "number-missing",
-      field: "number",
-      severity: "error",
-      message: "Registered company number is missing from the document.",
-      expected: company.companyNumber,
-      fixable: true,
-    });
-  } else if (!numbers.includes(company.companyNumber)) {
-    issues.push({
-      id: "number-mismatch",
-      field: "number",
-      severity: "error",
-      message: "Registered number does not match Companies House.",
-      found: numbers.join(", "),
-      expected: company.companyNumber,
-      fixable: true,
-    });
+function activeOfficers(companies: CompanyRecord[]) {
+  return companies.flatMap((company) =>
+    company.officers
+      .filter((officer) => !officer.resigned)
+      .map((officer) => ({ ...officer, companyName: company.companyName })),
+  );
+}
+
+function officerHit(
+  person: string,
+  officers: { name: string; companyName: string }[],
+) {
+  return officers.find((officer) => namesOverlap(person, officer.name));
+}
+
+function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue[] {
+  const issues: Issue[] = [];
+  const officers = activeOfficers(companies);
+  const officerSummary = officers
+    .slice(0, 12)
+    .map((officer) => `${officer.name} (${officer.companyName})`)
+    .join("; ");
+
+  for (const company of companies) {
+    if (company.companyStatus && company.companyStatus !== "active") {
+      issues.push({
+        id: `status-${company.companyNumber}`,
+        field: "status",
+        severity: "error",
+        message: `Companies House lists ${company.companyName} as ${company.companyStatus}.`,
+        found: company.companyStatus,
+        expected: "active",
+      });
+    }
   }
 
   if (extracted.names.length) {
-    const nameHit = extracted.names.some((name) => namesOverlap(name, company.companyName));
-    if (!nameHit) {
-      issues.push({
-        id: "name-mismatch",
-        field: "name",
-        severity: "warning",
-        message: "Company name on the document does not clearly match Companies House.",
-        found: extracted.names[0],
-        expected: company.companyName,
-      });
+    for (const name of extracted.names) {
+      const hit = companies.some((company) => namesOverlap(name, company.companyName));
+      if (!hit) {
+        issues.push({
+          id: `name-mismatch-${name}`,
+          field: "name",
+          severity: "warning",
+          message: "A company name on the document does not clearly match Companies House.",
+          found: name,
+          expected: companies.map((company) => company.companyName).join("; "),
+        });
+      }
     }
   }
 
   const docPostcodes = extracted.postcodes.map(foldPostcode);
-  const chPost = foldPostcode(company.postalCode);
   const addressBlob = foldCompanyText(
     [...extracted.addressHints, ...extracted.postcodes, extracted.fileName].join(" "),
   );
-  const lineHits = company.addressLines.some((line) => {
-    const folded = foldCompanyText(line);
-    return folded.length > 4 && addressBlob.includes(folded);
-  });
-  if (chPost && !docPostcodes.includes(chPost) && !lineHits) {
-    issues.push({
-      id: "address-mismatch",
-      field: "address",
-      severity: "error",
-      message: "Registered office does not match Companies House.",
-      found: extracted.addressHints[0] || extracted.postcodes.join(", ") || "not found",
-      expected: company.address,
-      fixable: true,
+  for (const company of companies) {
+    const chPost = foldPostcode(company.postalCode);
+    const lineHits = company.addressLines.some((line) => {
+      const folded = foldCompanyText(line);
+      return folded.length > 4 && addressBlob.includes(folded);
     });
+    if (chPost && !docPostcodes.includes(chPost) && !lineHits) {
+      issues.push({
+        id: `address-mismatch-${company.companyNumber}`,
+        field: "address",
+        severity: "error",
+        message: `Registered office for ${company.companyName} does not match Companies House.`,
+        found: extracted.addressHints[0] || extracted.postcodes.join(", ") || "not found",
+        expected: company.address,
+        fixable: true,
+      });
+    }
   }
 
-  const active = company.officers.filter((officer) => !officer.resigned);
   for (const director of extracted.directors) {
-    if (!active.some((officer) => namesOverlap(director, officer.name))) {
+    if (!officerHit(director, officers)) {
       issues.push({
         id: `director-${director}`,
         field: "director",
         severity: "error",
-        message: `${director} is named as a director but is not a current Companies House officer.`,
+        message: `${director} is named as a director but is not a current officer of any company on this document.`,
         found: director,
-        expected: active.map((officer) => officer.name).slice(0, 8).join("; "),
+        expected: officerSummary,
       });
     }
   }
   for (const signatory of extracted.signatories) {
-    if (!active.some((officer) => namesOverlap(signatory, officer.name))) {
+    if (!officerHit(signatory, officers)) {
       issues.push({
         id: `signatory-${signatory}`,
         field: "signatory",
         severity: "warning",
-        message: `${signatory} appears as a signatory but is not a current Companies House officer. Confirm they are authorised before wiping.`,
+        message: `${signatory} appears as a signatory but is not a current officer of any company on this document. Confirm they are authorised before wiping.`,
         found: signatory,
       });
     }
@@ -225,12 +241,14 @@ export async function checkExtractedDocument(
   extracted: ExtractedCompany,
   key: string,
 ): Promise<CheckResult> {
-  const issues: Issue[] = [];
-  let number = extracted.numbers[0]?.toUpperCase() || "";
-  if (!number && extracted.names[0]) {
-    number = (await searchCompany(extracted.names[0], key)) || "";
+  const numbers = uniqueNumbers(extracted.numbers).slice(0, 4);
+  if (!numbers.length) {
+    for (const name of extracted.names.slice(0, 4)) {
+      const found = await searchCompany(name, key);
+      if (found) numbers.push(found.toUpperCase());
+    }
   }
-  if (!number) {
+  if (!numbers.length) {
     return {
       fileId: extracted.fileId,
       fileName: extracted.fileName,
@@ -246,24 +264,32 @@ export async function checkExtractedDocument(
     };
   }
 
-  const company = await loadCompany(number, key);
-  if (!company) {
-    issues.push({
-      id: "unknown-number",
-      field: "number",
-      severity: "error",
-      message: `Companies House has no live record for ${number}.`,
-      found: number,
-    });
+  const companies: CompanyRecord[] = [];
+  const issues: Issue[] = [];
+  for (const number of uniqueNumbers(numbers)) {
+    const company = await loadCompany(number, key);
+    if (company) companies.push(company);
+    else {
+      issues.push({
+        id: `unknown-number-${number}`,
+        field: "number",
+        severity: "error",
+        message: `Companies House has no live record for ${number}.`,
+        found: number,
+      });
+    }
+  }
+  if (!companies.length) {
     return { fileId: extracted.fileId, fileName: extracted.fileName, issues, ok: false };
   }
 
-  const compared = compare(extracted, company);
+  const compared = [...issues, ...compare(extracted, companies)];
   const blocking = compared.filter((issue) => issue.severity === "error");
   return {
     fileId: extracted.fileId,
     fileName: extracted.fileName,
-    company,
+    company: companies[0],
+    companies,
     issues: compared,
     ok: blocking.length === 0,
   };
