@@ -1,6 +1,9 @@
 "use client";
 
+import { BillCheckModal } from "@/components/BillCheckModal";
 import { CompanyCheckModal } from "@/components/CompanyCheckModal";
+import { extractBillFields } from "@/lib/bill-parse";
+import type { BillCheckResult } from "@/lib/bill-types";
 import { applyCompanyFixes } from "@/lib/company-fix";
 import { extractCompanyFields } from "@/lib/company-parse";
 import type { CheckResult, TextRun } from "@/lib/company-types";
@@ -24,8 +27,10 @@ type Item = {
   url?: string;
   engine?: string;
   companyCheck?: CheckResult;
+  billCheck?: BillCheckResult;
   wipeBlocked?: boolean;
   needsCompanyCheck?: boolean;
+  needsBillCheck?: boolean;
 };
 
 const ACCEPT =
@@ -80,23 +85,41 @@ function isCompanyDoc(item: Item) {
   return kind === "pdf" || kind === "docx";
 }
 
+function hasCheckErrors(item: Item) {
+  if (
+    item.needsCompanyCheck &&
+    item.companyCheck?.issues.some((issue) => issue.severity === "error")
+  ) {
+    return true;
+  }
+  if (item.needsBillCheck && item.billCheck?.issues.some((issue) => issue.severity === "error")) {
+    return true;
+  }
+  return false;
+}
+
 function isWipeable(item: Item) {
   if (item.status !== "queued") return false;
-  if (!item.needsCompanyCheck) return true;
-  return Boolean(item.companyCheck?.ok) && !item.wipeBlocked;
+  if (item.needsCompanyCheck && !item.companyCheck?.ok) return false;
+  if (item.needsBillCheck && !item.billCheck?.ok) return false;
+  return !hasCheckErrors(item);
 }
 
 function badgeFor(item: Item) {
-  if (item.wipeBlocked && item.needsCompanyCheck) {
+  if (item.wipeBlocked || hasCheckErrors(item)) {
     return { className: "badge blocked", label: "Blocked" };
   }
   if (item.status === "ready") return { className: "badge completed", label: "Clean" };
   if (item.status === "wiping") return { className: "badge wiping", label: "Wiping" };
   if (item.status === "error") return { className: "badge error", label: "Failed" };
-  if (item.needsCompanyCheck && item.companyCheck?.ok) {
+  if (
+    (item.needsCompanyCheck && item.companyCheck?.ok) ||
+    (item.needsBillCheck && item.billCheck?.ok)
+  ) {
     return { className: "badge completed", label: "Checked" };
   }
   if (item.needsCompanyCheck) return { className: "badge wiping", label: "CH" };
+  if (item.needsBillCheck) return { className: "badge wiping", label: "Bill" };
   return { className: "badge queued", label: "Ready" };
 }
 
@@ -172,6 +195,7 @@ export function StripApp() {
   const [checking, setChecking] = useState(false);
   const [applyingFixes, setApplyingFixes] = useState(false);
   const [modalResults, setModalResults] = useState<CheckResult[] | null>(null);
+  const [billModalResults, setBillModalResults] = useState<BillCheckResult[] | null>(null);
   const extractRef = useRef(new Map<string, { kind: "pdf" | "docx"; bytes: Uint8Array; runs: TextRun[] }>());
 
   useEffect(() => {
@@ -315,8 +339,7 @@ export function StripApp() {
     const blocked = itemsRef.current.filter(
       (item) =>
         item.status === "queued" &&
-        item.needsCompanyCheck &&
-        item.wipeBlocked &&
+        hasCheckErrors(item) &&
         (!ids || ids.includes(item.id)),
     );
     const batch = itemsRef.current.filter((item) => {
@@ -325,6 +348,11 @@ export function StripApp() {
       return true;
     });
     if (!batch.length) {
+      const billBlocked = blocked.filter((item) => item.needsBillCheck && item.billCheck);
+      if (billBlocked.length) {
+        setBillModalResults(billBlocked.map((item) => item.billCheck).filter(Boolean) as BillCheckResult[]);
+        return;
+      }
       if (blocked.length) {
         setModalResults(blocked.map((item) => item.companyCheck).filter(Boolean) as CheckResult[]);
       }
@@ -429,6 +457,114 @@ export function StripApp() {
     } finally {
       setChecking(false);
     }
+  }
+
+  async function startBillCheck() {
+    if (runningRef.current || checking) return;
+    const batch = itemsRef.current.filter(
+      (item) => item.status === "queued" && item.needsBillCheck,
+    );
+    if (!batch.length) return;
+    setChecking(true);
+    try {
+      const payload: ReturnType<typeof extractBillFields>[] = [];
+      const skipped: BillCheckResult[] = [];
+      for (const item of batch) {
+        const kind = kindFromName(item.file.name, item.file.type);
+        if (kind !== "pdf" && kind !== "docx") {
+          skipped.push({
+            fileId: item.id,
+            fileName: item.file.name,
+            skipped: "This file type is not checked for supply numbers.",
+            supplies: [],
+            issues: [],
+            ok: true,
+          });
+          continue;
+        }
+        const bytes = new Uint8Array(await item.file.arrayBuffer());
+        const extracted = await extractDocument(kind, bytes);
+        extractRef.current.set(item.id, { kind, bytes, runs: extracted.runs });
+        payload.push({
+          ...extractBillFields(extracted.text, item.file.name),
+          fileId: item.id,
+        });
+      }
+      let checked: BillCheckResult[] = [...skipped];
+      if (payload.length) {
+        const response = await fetch("/api/bills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ documents: payload }),
+        });
+        const data = (await response.json()) as { results?: BillCheckResult[]; error?: string };
+        if (!response.ok) {
+          throw new Error(data.error || "Bill check failed.");
+        }
+        checked = [...(data.results ?? []), ...skipped];
+      }
+      const byId = new Map(checked.map((row) => [row.fileId || row.fileName, row] as const));
+      const nextItems = itemsRef.current.map((item) => {
+        const report = byId.get(item.id) || byId.get(item.file.name);
+        if (!report || item.status !== "queued" || !item.needsBillCheck) return item;
+        const blocked = report.issues.some((issue) => issue.severity === "error");
+        return {
+          ...item,
+          billCheck: report,
+          wipeBlocked: blocked || hasCheckErrors({ ...item, billCheck: report }),
+          step: blocked ? "Bill mismatch" : "Checked · ready to wipe",
+        };
+      });
+      itemsRef.current = nextItems;
+      setItems(nextItems);
+      const checkedIds = batch.map((item) => item.id);
+      const needsModal = checked.some((row) => row.issues.length > 0);
+      if (needsModal) {
+        setBillModalResults(checked);
+        return;
+      }
+      await startWipe(checkedIds);
+    } catch (error) {
+      setBillModalResults([
+        {
+          fileName: "Bill check",
+          ok: false,
+          supplies: [],
+          issues: [
+            {
+              id: "lookup",
+              field: "lookup",
+              severity: "error",
+              message: error instanceof Error ? error.message : "The check failed.",
+            },
+          ],
+        },
+      ]);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function applyBillCheckAndWipe() {
+    if (runningRef.current) return;
+    const reports = billModalResults;
+    if (!reports) return;
+    const byId = new Map(reports.map((row) => [row.fileId || row.fileName, row] as const));
+    for (const item of itemsRef.current) {
+      if (item.status !== "queued" || !item.needsBillCheck) continue;
+      const report = byId.get(item.id) || byId.get(item.file.name) || item.billCheck;
+      if (!report || report.issues.some((issue) => issue.severity === "error")) continue;
+      patchItem(item.id, {
+        wipeBlocked: false,
+        billCheck: report,
+        step: "Checked · ready to wipe",
+      });
+    }
+    const passedIds = itemsRef.current
+      .filter((item) => item.needsBillCheck && item.status === "queued" && isWipeable(item))
+      .map((item) => item.id);
+    setBillModalResults(null);
+    await startWipe(passedIds);
   }
 
   async function applyCheckAndWipe() {
@@ -551,6 +687,7 @@ export function StripApp() {
     }
     extractRef.current.clear();
     setModalResults(null);
+    setBillModalResults(null);
     setItems([]);
   }
 
@@ -599,6 +736,7 @@ export function StripApp() {
       engine: undefined,
       wipeBlocked: false,
       companyCheck: undefined,
+      billCheck: undefined,
     });
   }
 
@@ -609,7 +747,26 @@ export function StripApp() {
       needsCompanyCheck: on,
       wipeBlocked: false,
       companyCheck: undefined,
-      step: on ? "Companies House required" : "Ready to wipe",
+      step: on
+        ? "Companies House required"
+        : item.needsBillCheck
+          ? "Bill check required"
+          : "Ready to wipe",
+    });
+  }
+
+  function toggleBillCheck(item: Item) {
+    if (runningRef.current || item.status !== "queued" || !isCompanyDoc(item)) return;
+    const on = !item.needsBillCheck;
+    patchItem(item.id, {
+      needsBillCheck: on,
+      wipeBlocked: false,
+      billCheck: undefined,
+      step: on
+        ? "Bill check required"
+        : item.needsCompanyCheck
+          ? "Companies House required"
+          : "Ready to wipe",
     });
   }
 
@@ -625,6 +782,9 @@ export function StripApp() {
   const wipeableCount = items.filter(isWipeable).length;
   const companyCheckCount = items.filter(
     (item) => item.status === "queued" && item.needsCompanyCheck,
+  ).length;
+  const billCheckCount = items.filter(
+    (item) => item.status === "queued" && item.needsBillCheck,
   ).length;
   const wipeLabel =
     wipeableCount === 1 ? "Wipe file" : `Wipe ${wipeableCount} files`;
@@ -663,10 +823,24 @@ export function StripApp() {
               disabled={checking || applyingFixes}
             >
               {checking
-                ? "Checking Companies House…"
+                ? "Checking…"
                 : companyCheckCount === 1
                   ? "Check Companies House"
                   : `Check Companies House (${companyCheckCount})`}
+            </button>
+          ) : null}
+          {billCheckCount > 0 && !running ? (
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() => void startBillCheck()}
+              disabled={checking || applyingFixes}
+            >
+              {checking
+                ? "Checking…"
+                : billCheckCount === 1
+                  ? "Check bill"
+                  : `Check bills (${billCheckCount})`}
             </button>
           ) : null}
           {running ? (
@@ -735,7 +909,7 @@ export function StripApp() {
               <span>
                 {running
                   ? "this batch is locked until every file is done"
-                  : "add them all, then wipe. Turn on Companies House only for invoices or contracts"}
+                  : "add them all, then wipe. Companies House for invoices or contracts; bill check for energy or water"}
               </span>
             </label>
 
@@ -754,8 +928,13 @@ export function StripApp() {
                         <div className="meta">
                           {kindLabel(item.file.name)} · {formatSize(item.file.size)}
                           {item.status === "wiping" ? ` · ${item.step} · ${item.progress}%` : ""}
-                          {item.status === "queued" && item.needsCompanyCheck && item.wipeBlocked
-                            ? " · wipe blocked until company details match"
+                          {item.status === "queued" && hasCheckErrors(item)
+                            ? item.needsBillCheck &&
+                              item.billCheck?.issues.some((issue) => issue.severity === "error")
+                              ? " · wipe blocked until the supply matches the address"
+                              : " · wipe blocked until company details match"
+                            : item.status === "queued" && item.needsBillCheck && !item.billCheck
+                              ? " · bill check required before wipe"
                             : item.status === "queued" && item.needsCompanyCheck && !item.companyCheck
                               ? " · Companies House required before wipe"
                               : item.status === "queued"
@@ -779,18 +958,32 @@ export function StripApp() {
                       </div>
                       <div className="envelope-row-actions">
                         {item.status === "queued" && isCompanyDoc(item) ? (
-                          <label
-                            className={`ch-toggle${item.needsCompanyCheck ? " is-on" : ""}`}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={Boolean(item.needsCompanyCheck)}
-                              disabled={running || checking}
-                              onChange={() => toggleCompanyCheck(item)}
-                            />
-                            Companies House
-                          </label>
+                          <>
+                            <label
+                              className={`ch-toggle${item.needsCompanyCheck ? " is-on" : ""}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={Boolean(item.needsCompanyCheck)}
+                                disabled={running || checking}
+                                onChange={() => toggleCompanyCheck(item)}
+                              />
+                              Companies House
+                            </label>
+                            <label
+                              className={`ch-toggle${item.needsBillCheck ? " is-on" : ""}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={Boolean(item.needsBillCheck)}
+                                disabled={running || checking}
+                                onChange={() => toggleBillCheck(item)}
+                              />
+                              Bill
+                            </label>
+                          </>
                         ) : null}
                         <span className={badge.className}>{badge.label}</span>
                         {item.status === "ready" && item.url ? (
@@ -866,9 +1059,9 @@ export function StripApp() {
               <li>Word document properties and custom tags</li>
             </ul>
             <p className="muted" style={{ margin: "0.9rem 0 0" }}>
-              Wipe is for every file. Tick Companies House only on invoices or contracts.
-              Bills, statements, and rental agreements can be wiped as they are. Files stay
-              in memory, then are discarded.
+              Wipe is for every file. Tick Companies House on invoices or contracts. Tick Bill
+              on energy or water bills to check the MPAN, MPRN or SPID against the printed
+              address. Files stay in memory, then are discarded.
             </p>
           </aside>
         </div>
@@ -896,6 +1089,13 @@ export function StripApp() {
           applying={applyingFixes}
           onCancel={() => setModalResults(null)}
           onProceed={() => void applyCheckAndWipe()}
+        />
+      ) : null}
+      {billModalResults ? (
+        <BillCheckModal
+          results={billModalResults}
+          onCancel={() => setBillModalResults(null)}
+          onProceed={() => void applyBillCheckAndWipe()}
         />
       ) : null}
     </div>
