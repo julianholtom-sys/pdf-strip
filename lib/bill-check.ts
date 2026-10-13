@@ -1,4 +1,6 @@
 import {
+  correctedMpanForAddress,
+  dnoIdsForPostcode,
   formatMpan,
   isIndependentDistributor,
   isScottishPostcode,
@@ -7,6 +9,7 @@ import {
   networkForDistributor,
   networksForPostcode,
   postcodeArea,
+  shapeMpanLike,
 } from "./bill-networks";
 import { foldBillPostcode } from "./bill-parse";
 import type { BillCheckResult, BillIssue, ExtractedBill, SupplyRecord } from "./bill-types";
@@ -57,16 +60,23 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
 
   const liveMpans = extracted.mpans.filter(mpanChecksumOk);
   for (const raw of extracted.mpans) {
-    if (!mpanChecksumOk(raw)) {
-      issues.push({
-        id: `mpan-invalid-${raw}`,
-        field: "identifier",
-        severity: "error",
-        message: "The electricity supply number (MPAN) on the bill fails its check digit, so it is not a valid meter point.",
-        correction: "Replace it with the 13-digit MPAN printed by the supplier, including a valid check digit.",
-        found: raw,
-      });
-    }
+    if (mpanChecksumOk(raw)) continue;
+    const fixed = canonical ? correctedMpanForAddress(raw, canonical) : null;
+    const checksumOnly = fixed?.reason === "checksum" ? fixed : null;
+    issues.push({
+      id: `mpan-invalid-${raw}`,
+      field: "identifier",
+      severity: "error",
+      message: "The electricity supply number (MPAN) on the bill fails its check digit, so it is not a valid meter point.",
+      correction: checksumOnly
+        ? `Change it to ${formatMpan(checksumOnly.core)}.`
+        : fixed
+          ? `Change it to ${formatMpan(fixed.core)} so it matches ${areaNames(canonical) || canonical}.`
+          : "Replace it with the 13-digit MPAN printed by the supplier, including a valid check digit.",
+      found: shapeMpanLike(raw, raw),
+      expected: (checksumOnly || fixed) ? shapeMpanLike(raw, (checksumOnly || fixed)!.core) : undefined,
+      fixable: Boolean(checksumOnly || fixed),
+    });
   }
 
   for (const mpan of liveMpans) {
@@ -116,15 +126,22 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
       continue;
     }
     if (!allowedIds.includes(id)) {
+      const fixed = correctedMpanForAddress(mpan, canonical);
+      const uniqueIds = dnoIdsForPostcode(canonical);
       issues.push({
         id: `mpan-mismatch-${mpan}`,
         field: "address",
         severity: "error",
         message:
           "The electricity supply number does not belong to the network that covers the address on the bill.",
-        correction: `Use an MPAN for ${areaNames(canonical) || canonical}, or correct the bill address postcode.`,
-        found: `${formatMpan(mpan)} · ${network?.operator || "unknown network"} (${network?.licenceArea || "unknown area"})`,
-        expected: areaNames(canonical) || canonical,
+        correction: fixed
+          ? `Change the MPAN to ${formatMpan(fixed.core)} so it uses ${areaNames(canonical)} for ${canonical}.`
+          : uniqueIds.length > 1
+            ? `This postcode could be ${areaNames(canonical)}. Put the MPAN issued for this site, or correct the address.`
+            : `Use an MPAN for ${areaNames(canonical) || canonical}, or correct the bill address postcode.`,
+        found: formatMpan(mpan),
+        expected: fixed ? shapeMpanLike(formatMpan(mpan), fixed.core) : undefined,
+        fixable: Boolean(fixed),
       });
     }
   }

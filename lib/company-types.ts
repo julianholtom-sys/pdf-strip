@@ -16,6 +16,7 @@ export type TextRun = {
   y: number;
   width: number;
   height: number;
+  fontName?: string;
 };
 
 export type Issue = {

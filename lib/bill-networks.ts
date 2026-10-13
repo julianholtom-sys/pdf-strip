@@ -234,17 +234,62 @@ export function networksForPostcode(postcode: string): NetworkArea[] {
   return out;
 }
 
+export function mpanCheckDigit(first12: string) {
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) {
+    sum += Number(first12[i]) * MPAN_PRIMES[i];
+  }
+  return (sum % 11) % 10;
+}
+
+export function withMpanCheckDigit(first12: string) {
+  return `${first12}${mpanCheckDigit(first12)}`;
+}
+
 export function mpanChecksumOk(core: string) {
   if (!/^\d{13}$/.test(core)) return false;
   const id = mpanDistributorId(core);
   if (id < 10 || id > 52) return false;
-  let sum = 0;
-  for (let i = 0; i < 12; i += 1) {
-    sum += Number(core[i]) * MPAN_PRIMES[i];
+  return mpanCheckDigit(core.slice(0, 12)) === Number(core[12]);
+}
+
+export function dnoIdsForPostcode(postcode: string) {
+  return [...new Set((AREA_TO_IDS[postcodeArea(postcode)] || []).filter((id) => id < IDNO_FROM))];
+}
+
+export function correctedMpanForAddress(core: string, postcode: string) {
+  if (!/^\d{13}$/.test(core)) return null;
+  const currentId = mpanDistributorId(core);
+  if (currentId < 10 || currentId > 52) return null;
+  const ids = dnoIdsForPostcode(postcode);
+  if (ids.length === 1 && ids[0] !== currentId && !isIndependentDistributor(currentId)) {
+    return {
+      core: withMpanCheckDigit(`${String(ids[0]).padStart(2, "0")}${core.slice(2, 12)}`),
+      reason: "network" as const,
+    };
   }
-  return (sum % 11) % 10 === Number(core[12]);
+  if (!mpanChecksumOk(core)) {
+    const checksummed = withMpanCheckDigit(core.slice(0, 12));
+    const nextId = mpanDistributorId(checksummed);
+    if (!ids.length || ids.includes(nextId) || isIndependentDistributor(nextId)) {
+      return { core: checksummed, reason: "checksum" as const };
+    }
+    if (ids.length === 1) {
+      return {
+        core: withMpanCheckDigit(`${String(ids[0]).padStart(2, "0")}${core.slice(2, 12)}`),
+        reason: "network" as const,
+      };
+    }
+  }
+  return null;
 }
 
 export function formatMpan(core: string) {
   return `${core.slice(0, 2)} ${core.slice(2, 6)} ${core.slice(6, 10)} ${core.slice(10)}`;
+}
+
+export function shapeMpanLike(found: string, core: string) {
+  const digits = found.replace(/\D/g, "");
+  if (digits.length === 13 && !/\s/.test(found)) return core;
+  return formatMpan(core);
 }

@@ -2,6 +2,7 @@
 
 import { BillCheckModal } from "@/components/BillCheckModal";
 import { CompanyCheckModal } from "@/components/CompanyCheckModal";
+import { applyBillFixes } from "@/lib/bill-fix";
 import { extractBillFields } from "@/lib/bill-parse";
 import type { BillCheckResult } from "@/lib/bill-types";
 import { applyCompanyFixes } from "@/lib/company-fix";
@@ -555,27 +556,47 @@ export function StripApp() {
     if (runningRef.current) return;
     const reports = billModalResults;
     if (!reports) return;
-    const byId = new Map(reports.map((row) => [row.fileId || row.fileName, row] as const));
-    for (const item of itemsRef.current) {
-      if (item.status !== "queued" || !item.needsBillCheck) continue;
-      const report = byId.get(item.id) || byId.get(item.file.name) || item.billCheck;
-      if (!report || report.issues.some((issue) => issue.severity === "error")) continue;
-      patchItem(item.id, {
-        wipeBlocked: false,
-        billCheck: report,
-        step: "Checked · ready to wipe",
-      });
+    setApplyingFixes(true);
+    try {
+      const byId = new Map(reports.map((row) => [row.fileId || row.fileName, row] as const));
+      for (const item of itemsRef.current) {
+        if (item.status !== "queued" || !item.needsBillCheck) continue;
+        const report = byId.get(item.id) || byId.get(item.file.name) || item.billCheck;
+        if (!report) continue;
+        const errors = report.issues.filter((issue) => issue.severity === "error");
+        const unfixable = errors.some((issue) => !issue.fixable);
+        if (unfixable) continue;
+        const extracted = extractRef.current.get(item.id);
+        let file = item.file;
+        if (errors.some((issue) => issue.fixable) && extracted) {
+          const fixed = await applyBillFixes(extracted.kind, extracted.bytes, report, extracted.runs);
+          if (fixed.applied) {
+            file = new File([new Uint8Array(fixed.bytes)], item.file.name, { type: item.file.type });
+            extractRef.current.set(item.id, { ...extracted, bytes: new Uint8Array(fixed.bytes) });
+          } else if (errors.length) {
+            continue;
+          }
+        }
+        patchItem(item.id, {
+          file,
+          wipeBlocked: false,
+          billCheck: { ...report, issues: report.issues.filter((issue) => !issue.fixable), ok: true },
+          step: "Checked · ready to wipe",
+        });
+      }
+      const passedIds = itemsRef.current
+        .filter((item) => item.needsBillCheck && item.status === "queued" && isWipeable(item))
+        .map((item) => item.id);
+      setBillModalResults(null);
+      await startWipe(passedIds);
+      const remaining = itemsRef.current
+        .filter((item) => item.needsBillCheck && item.status === "queued" && hasCheckErrors(item))
+        .map((item) => item.billCheck)
+        .filter(Boolean) as BillCheckResult[];
+      if (remaining.length) setBillModalResults(remaining);
+    } finally {
+      setApplyingFixes(false);
     }
-    const passedIds = itemsRef.current
-      .filter((item) => item.needsBillCheck && item.status === "queued" && isWipeable(item))
-      .map((item) => item.id);
-    setBillModalResults(null);
-    await startWipe(passedIds);
-    const remaining = itemsRef.current
-      .filter((item) => item.needsBillCheck && item.status === "queued" && hasCheckErrors(item))
-      .map((item) => item.billCheck)
-      .filter(Boolean) as BillCheckResult[];
-    if (remaining.length) setBillModalResults(remaining);
   }
 
   async function applyCheckAndWipe() {
@@ -1114,6 +1135,7 @@ export function StripApp() {
       {billModalResults ? (
         <BillCheckModal
           results={billModalResults}
+          applying={applyingFixes}
           onCancel={() => setBillModalResults(null)}
           onProceed={() => void applyBillCheckAndWipe()}
         />

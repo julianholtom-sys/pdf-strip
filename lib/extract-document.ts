@@ -59,6 +59,7 @@ async function extractPdf(bytes: Uint8Array): Promise<ExtractedDoc> {
           y: transform[5] ?? 0,
           width: item.width || 0,
           height: item.height || Math.abs(transform[3] || 10),
+          fontName: "fontName" in item ? String(item.fontName || "") : "",
         });
         line.push(item.str);
         if (item.hasEOL) line.push("\n");

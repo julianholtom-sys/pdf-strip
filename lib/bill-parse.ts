@@ -39,20 +39,27 @@ function digitsOnly(value: string) {
   return value.replace(/\D+/g, "");
 }
 
+function looksLikeMpanCore(core: string) {
+  if (!/^\d{13}$/.test(core)) return false;
+  const id = Number(core.slice(0, 2));
+  return id >= 10 && id <= 52;
+}
+
 function mpansFromDigits(raw: string) {
   const digits = digitsOnly(raw);
   const found: string[] = [];
-  if (digits.length >= 21) {
-    const core = digits.slice(-13);
-    if (mpanChecksumOk(core)) found.push(core);
+  if (digits.length >= 21 && looksLikeMpanCore(digits.slice(-13))) {
+    found.push(digits.slice(-13));
   }
   if (digits.length >= 13) {
     for (let i = 0; i <= digits.length - 13; i += 1) {
       const core = digits.slice(i, i + 13);
-      if (mpanChecksumOk(core)) found.push(core);
+      if (looksLikeMpanCore(core)) found.push(core);
     }
   }
-  return unique(found);
+  const list = unique(found);
+  const valid = list.filter(mpanChecksumOk);
+  return valid.length ? valid : list.slice(0, 4);
 }
 
 function scanUnlabelledMpans(text: string) {
