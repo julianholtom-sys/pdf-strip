@@ -251,6 +251,7 @@ function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue
         field: "status",
         severity: "error",
         message: `${company.companyName} (${company.companyNumber}) is not a live company. Companies House lists it as ${company.statusLabel}.`,
+        correction: `Replace this party with a company that is active on Companies House. ${company.statusLabel} cannot be rewritten automatically.`,
         found: company.statusLabel,
         expected: "active",
       });
@@ -260,6 +261,7 @@ function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue
         field: "status",
         severity: "warning",
         message: `${company.companyName} is still live at Companies House but has a proposal to strike off.`,
+        correction: "Confirm you still want this party, or replace it before it is struck off.",
         found: company.statusLabel,
       });
     }
@@ -281,7 +283,8 @@ function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue
         id: `address-mismatch-${company.companyNumber}`,
         field: "address",
         severity: "error",
-        message: `Registered office for ${company.companyName} does not match Companies House.`,
+        message: `The registered office for ${company.companyName} does not match Companies House.`,
+        correction: `Change it to ${company.address}.`,
         found: extracted.addressHints[0] || extracted.postcodes.join(", ") || "not found",
         expected: company.address,
         fixable: true,
@@ -296,6 +299,9 @@ function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue
         field: "director",
         severity: "error",
         message: `${director} is named as a director but is not a current officer of any company on this document.`,
+        correction: officerSummary
+          ? `Replace the director with a current officer: ${officerSummary}.`
+          : "Replace the director with a current Companies House officer of a company named on this document.",
         found: director,
         expected: officerSummary,
       });
@@ -307,7 +313,10 @@ function compare(extracted: ExtractedCompany, companies: CompanyRecord[]): Issue
         id: `signatory-${signatory}`,
         field: "signatory",
         severity: "warning",
-        message: `${signatory} appears as a signatory but is not a current officer of any company on this document. Confirm they are authorised before wiping.`,
+        message: `${signatory} appears as a signatory but is not a current officer of any company on this document.`,
+        correction: officerSummary
+          ? `Confirm they are authorised, or name a current officer: ${officerSummary}.`
+          : "Confirm they are authorised, or name a current Companies House officer.",
         found: signatory,
       });
     }
@@ -335,6 +344,7 @@ export async function checkExtractedDocument(
         field: "number",
         severity: "error",
         message: `Companies House has no live record for ${normalised}.`,
+        correction: "Put the current company number from the Companies House record on the document.",
         found: normalised,
       });
     }
@@ -355,6 +365,7 @@ export async function checkExtractedDocument(
         field: "number",
         severity: "error",
         message: `Companies House has no live record for ${row.number}.`,
+        correction: "Put the current company number from the Companies House record on the document.",
         found: row.number,
       });
     }
@@ -373,8 +384,12 @@ export async function checkExtractedDocument(
       severity: "error",
       message:
         found.kind === "ambiguous"
-          ? `${name} is named on this document but matches more than one Companies House record. Add the company number.`
+          ? `${name} is named on this document but matches more than one Companies House record.`
           : `${name} is named on this document but could not be confirmed as a live Companies House company.`,
+      correction:
+        found.kind === "ambiguous"
+          ? `Add the unique company number from Companies House for ${name}.`
+          : `Add the company number from Companies House, or replace ${name} with a live company.`,
       found: name,
     });
   }
@@ -389,6 +404,7 @@ export async function checkExtractedDocument(
           field: "lookup",
           severity: "error",
           message: "No UK company number or recognisable company name was found to look up.",
+          correction: "Add the registered company name and number as they appear on Companies House.",
         },
       ],
       ok: false,

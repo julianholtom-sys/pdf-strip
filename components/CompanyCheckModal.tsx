@@ -1,4 +1,5 @@
 import type { CheckResult } from "@/lib/company-types";
+import { primaryIssue } from "@/lib/primary-issue";
 
 type Props = {
   results: CheckResult[];
@@ -9,8 +10,12 @@ type Props = {
 
 export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Props) {
   const blocking = results.filter((row) => row.issues.some((issue) => issue.severity === "error"));
-  const fixable = results.some((row) => row.issues.some((issue) => issue.fixable && issue.expected));
-  const canProceed = results.some((row) => {
+  const shown = results
+    .map((row) => ({ row, issue: primaryIssue(row.issues) }))
+    .filter((entry) => entry.issue);
+  const primary = shown[0]?.issue;
+  const fixable = Boolean(primary?.fixable && primary.expected);
+  const canProceed = results.every((row) => {
     const errors = row.issues.filter((issue) => issue.severity === "error");
     return errors.length === 0 || errors.every((issue) => issue.fixable);
   });
@@ -33,52 +38,34 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="ch-check-title">{title}</h2>
-        <p className="muted">
-          {blocking.length
-            ? "Wipe is blocked until every named company is live at Companies House and the registered details match, or you apply the official record."
-            : "A signatory does not match a current Companies House officer. Confirm they are authorised if you want to wipe."}
-        </p>
         <div className="modal-list">
-          {results.map((row) => (
-            <section key={row.fileId || row.fileName} className="modal-file">
-              <h3>{row.fileName}</h3>
-              {(row.companies?.length ? row.companies : row.company ? [row.company] : []).map(
-                (company) => (
-                  <p key={company.companyNumber} className="muted">
-                    {company.companyName} · {company.companyNumber}
-                    {company.statusLabel ? ` · ${company.statusLabel}` : ""}
-                    {company.address ? ` · ${company.address}` : ""}
+          {shown.length ? (
+            shown.slice(0, 1).map(({ row, issue }) => (
+              <section key={row.fileId || row.fileName} className="modal-file">
+                <h3>{row.fileName}</h3>
+                <p className={issue?.severity === "error" ? "issue-error" : "issue-warning"}>
+                  {issue?.message}
+                </p>
+                {issue?.correction ? (
+                  <p className="issue-fix">
+                    <strong>Correction:</strong> {issue.correction}
                   </p>
-                ),
-              )}
-              {row.skipped ? <p className="muted">{row.skipped}</p> : null}
-              {row.issues.length === 0 && !row.skipped ? (
-                <p className="muted">Matches Companies House.</p>
-              ) : null}
-              <ul>
-                {row.issues.map((issue) => (
-                  <li key={issue.id} className={issue.severity === "error" ? "is-error" : "is-warning"}>
-                    <strong>{issue.severity === "error" ? "Error" : "Check"}:</strong> {issue.message}
-                    {issue.found ? <span> Found: {issue.found}.</span> : null}
-                    {issue.expected ? <span> Companies House: {issue.expected}.</span> : null}
-                    {issue.fixable ? <span> This can be updated from the official record.</span> : null}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
+                ) : null}
+              </section>
+            ))
+          ) : (
+            <p className="muted">Matches Companies House.</p>
+          )}
         </div>
         {!canProceed ? (
+          <p className="muted">Correct the source file, then check again. Signatures are never drawn on.</p>
+        ) : fixable ? (
           <p className="muted">
-            Director, liquidation, dissolved, or missing-company issues cannot be rewritten
-            automatically. Correct the source file, then check again. Signatures are never drawn on.
+            This updates the printed number or registered office from the official record, then
+            strips metadata. Signatures are never drawn on.
           </p>
         ) : (
-          <p className="muted">
-            Applying a fix updates printed number and registered office using this file’s type
-            size and position where possible, then strips metadata. Only do this on drafts you
-            are allowed to edit. Signatures are never drawn on.
-          </p>
+          <p className="muted">Confirm they are authorised if you want to wipe. Signatures are never drawn on.</p>
         )}
         <div className="modal-actions">
           <button type="button" className="btn secondary" onClick={onCancel} disabled={applying}>

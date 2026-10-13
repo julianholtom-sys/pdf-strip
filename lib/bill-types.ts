@@ -15,6 +15,7 @@ export type BillIssue = {
   field: "identifier" | "address" | "lookup";
   severity: "error" | "warning";
   message: string;
+  correction?: string;
   found?: string;
   expected?: string;
   fixable?: boolean;

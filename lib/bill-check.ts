@@ -47,6 +47,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "error",
         message: "The postcode on the bill is not a live UK postcode.",
+        correction: `Change ${canonical} to the live UK postcode for the supply address.`,
         found: canonical,
       });
     } else if (looked.ok) {
@@ -62,6 +63,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "identifier",
         severity: "error",
         message: "The electricity supply number (MPAN) on the bill fails its check digit, so it is not a valid meter point.",
+        correction: "Replace it with the 13-digit MPAN printed by the supplier, including a valid check digit.",
         found: raw,
       });
     }
@@ -83,6 +85,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "error",
         message: "An MPAN is present but no UK postcode was found, so the supply cannot be checked against the bill address.",
+        correction: "Add the supply address postcode to the bill.",
         found: formatMpan(mpan),
       });
       continue;
@@ -93,6 +96,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "warning",
         message: `${formatMpan(mpan)} is on an independent network, which is not tied to one DNO region, so the postcode cannot confirm the site.`,
+        correction: "Confirm the MPAN with the supplier against the printed address before wiping.",
         found: canonical,
         expected: network?.operator,
       });
@@ -106,6 +110,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "warning",
         message: `No distribution network mapping is held for postcode area ${postcodeArea(canonical) || canonical}.`,
+        correction: "Confirm the MPAN and postcode with the supplier before wiping.",
         found: canonical,
       });
       continue;
@@ -117,6 +122,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         severity: "error",
         message:
           "The electricity supply number does not belong to the network that covers the address on the bill.",
+        correction: `Use an MPAN for ${areaNames(canonical) || canonical}, or correct the bill address postcode.`,
         found: `${formatMpan(mpan)} · ${network?.operator || "unknown network"} (${network?.licenceArea || "unknown area"})`,
         expected: areaNames(canonical) || canonical,
       });
@@ -137,6 +143,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "error",
         message: "A gas MPRN is present but no UK postcode was found on the bill.",
+        correction: "Add the supply address postcode to the bill.",
         found: mprn,
       });
     } else if (!/^\d{6,10}$/.test(mprn)) {
@@ -145,6 +152,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "identifier",
         severity: "error",
         message: "The gas meter point reference is not a 6–10 digit MPRN.",
+        correction: "Replace it with the 6–10 digit MPRN from the supplier.",
         found: mprn,
       });
     }
@@ -164,6 +172,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "error",
         message: "A water SPID is present but no UK postcode was found on the bill.",
+        correction: "Add the supply address postcode to the bill.",
         found: spid,
       });
     } else if (!isScottishPostcode(canonical)) {
@@ -172,6 +181,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
         field: "address",
         severity: "error",
         message: "A Scottish water SPID is on the bill, but the address postcode is not in Scotland.",
+        correction: `Change the address postcode to a Scottish postcode, or remove the SPID if this is not a Scottish water bill. Found ${canonical}.`,
         found: `${spid} · ${canonical}`,
         expected: "A Scottish postcode",
       });
@@ -185,6 +195,7 @@ export async function checkExtractedBill(extracted: ExtractedBill): Promise<Bill
       severity: "error",
       message:
         "No MPAN, MPRN, or SPID was found. Energy bills usually print a supply number (MPAN/S number) or gas MPRN next to the property address.",
+      correction: "Add the MPAN, MPRN or SPID from the bill next to the property address.",
     });
   }
 

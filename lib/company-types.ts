@@ -23,6 +23,7 @@ export type Issue = {
   field: "number" | "address" | "director" | "signatory" | "name" | "status" | "lookup";
   severity: "error" | "warning";
   message: string;
+  correction?: string;
   found?: string;
   expected?: string;
   fixable?: boolean;

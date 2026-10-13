@@ -590,6 +590,27 @@ a.btn {
   color: #8a5a12;
 }
 
+.issue-error,
+.issue-warning {
+  margin: 0.35rem 0 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.issue-error {
+  color: var(--danger);
+}
+
+.issue-warning {
+  color: #8a5a12;
+}
+
+.issue-fix {
+  margin: 0.55rem 0 0;
+  font-size: 0.95rem;
+}
+
 .modal-actions {
   display: flex;
   flex-wrap: wrap;
