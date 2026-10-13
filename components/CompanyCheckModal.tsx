@@ -15,7 +15,7 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
     .filter((entry) => entry.issue);
   const primary = shown[0]?.issue;
   const fixable = Boolean(primary?.fixable && primary.expected);
-  const canProceed = results.every((row) => {
+  const canProceed = results.some((row) => {
     const errors = row.issues.filter((issue) => issue.severity === "error");
     return errors.length === 0 || errors.every((issue) => issue.fixable);
   });
@@ -58,7 +58,10 @@ export function CompanyCheckModal({ results, applying, onCancel, onProceed }: Pr
           )}
         </div>
         {!canProceed ? (
-          <p className="muted">Correct the source file, then check again. Signatures are never drawn on.</p>
+          <p className="muted">
+            Only this file is blocked. Other files that passed have been cleaned. Correct this
+            file, then check again. Signatures are never drawn on.
+          </p>
         ) : fixable ? (
           <p className="muted">
             This updates the printed number or registered office from the official record, then

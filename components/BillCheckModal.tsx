@@ -45,7 +45,10 @@ export function BillCheckModal({ results, onCancel, onProceed }: Props) {
           )}
         </div>
         {!canProceed ? (
-          <p className="muted">Correct the source bill, then check again.</p>
+          <p className="muted">
+            Only this file is blocked. Other files that passed have been cleaned. Correct this
+            bill, then check again.
+          </p>
         ) : (
           <p className="muted">
             This check uses the official MPAN check digit and the distribution network for the

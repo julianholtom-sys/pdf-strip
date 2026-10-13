@@ -432,13 +432,15 @@ export function StripApp() {
       });
       itemsRef.current = nextItems;
       setItems(nextItems);
-      const checkedIds = batch.map((item) => item.id);
-      const needsModal = checked.some((row) => row.issues.length > 0);
-      if (needsModal) {
-        setModalResults(checked);
-        return;
-      }
-      await startWipe(checkedIds);
+      const batchIds = new Set(batch.map((item) => item.id));
+      const goodIds = nextItems
+        .filter((item) => batchIds.has(item.id) && isWipeable(item))
+        .map((item) => item.id);
+      const blockedReports = checked.filter((row) =>
+        row.issues.some((issue) => issue.severity === "error"),
+      );
+      if (goodIds.length) await startWipe(goodIds);
+      if (blockedReports.length) setModalResults(blockedReports);
     } catch (error) {
       setModalResults([
         {
@@ -518,13 +520,15 @@ export function StripApp() {
       });
       itemsRef.current = nextItems;
       setItems(nextItems);
-      const checkedIds = batch.map((item) => item.id);
-      const needsModal = checked.some((row) => row.issues.length > 0);
-      if (needsModal) {
-        setBillModalResults(checked);
-        return;
-      }
-      await startWipe(checkedIds);
+      const batchIds = new Set(batch.map((item) => item.id));
+      const goodIds = nextItems
+        .filter((item) => batchIds.has(item.id) && isWipeable(item))
+        .map((item) => item.id);
+      const blockedReports = checked.filter((row) =>
+        row.issues.some((issue) => issue.severity === "error"),
+      );
+      if (goodIds.length) await startWipe(goodIds);
+      if (blockedReports.length) setBillModalResults(blockedReports);
     } catch (error) {
       setBillModalResults([
         {
@@ -567,6 +571,11 @@ export function StripApp() {
       .map((item) => item.id);
     setBillModalResults(null);
     await startWipe(passedIds);
+    const remaining = itemsRef.current
+      .filter((item) => item.needsBillCheck && item.status === "queued" && hasCheckErrors(item))
+      .map((item) => item.billCheck)
+      .filter(Boolean) as BillCheckResult[];
+    if (remaining.length) setBillModalResults(remaining);
   }
 
   async function applyCheckAndWipe() {
@@ -608,10 +617,17 @@ export function StripApp() {
         });
       }
       const passedIds = itemsRef.current
-        .filter((item) => item.needsCompanyCheck && item.status === "queued" && !item.wipeBlocked)
+        .filter((item) => item.needsCompanyCheck && item.status === "queued" && isWipeable(item))
         .map((item) => item.id);
       setModalResults(null);
       await startWipe(passedIds);
+      const remaining = itemsRef.current
+        .filter(
+          (item) => item.needsCompanyCheck && item.status === "queued" && hasCheckErrors(item),
+        )
+        .map((item) => item.companyCheck)
+        .filter(Boolean) as CheckResult[];
+      if (remaining.length) setModalResults(remaining);
     } catch (error) {
       setModalResults([
         {
