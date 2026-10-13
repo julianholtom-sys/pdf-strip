@@ -98,7 +98,7 @@ select {
 }
 
 .brand-mark {
-  font-size: 1.1rem;
+  font-size: clamp(0.92rem, 2.4vw, 1.1rem);
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--ink);

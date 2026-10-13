@@ -198,12 +198,12 @@ export function StripApp() {
   }, [running, readyCount, items.length]);
 
   const headline = useMemo(() => {
-    if (!items.length) return "Strip metadata";
+    if (!items.length) return "Check & clean files";
     if (running && cursor.n > 0) return `Wiping ${cursor.i} of ${cursor.n}`;
     if (running) return "Wiping files";
     if (queuedCount > 0) return queuedCount === 1 ? "1 file ready" : `${queuedCount} files ready`;
     if (readyCount === items.length) return "Clean copies ready";
-    return "Strip metadata";
+    return "Check & clean files";
   }, [items.length, running, cursor, queuedCount, readyCount]);
 
   function patchItem(id: string, partial: Partial<Item>) {
@@ -580,7 +580,7 @@ export function StripApp() {
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = href;
-      link.download = "pdf-strip-clean.zip";
+      link.download = "file-check-clean.zip";
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(href), 2000);
     } finally {
@@ -635,7 +635,7 @@ export function StripApp() {
         <div className="brand">
           <BrandMark />
           <span className="brand-copy">
-            <span className="brand-mark">PDF-Strip</span>
+            <span className="brand-mark">File Check & Clean</span>
             <span className="brand-sub">Metadata wipe</span>
           </span>
         </div>

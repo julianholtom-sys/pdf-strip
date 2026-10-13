@@ -9,9 +9,9 @@ const sans = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "PDF-Strip — wipe metadata, keep the page",
+  title: "File Check & Clean",
   description:
-    "Drop a PDF, photo, or Word file. Author, dates, EXIF, and Content Credentials are stripped. Nothing is stored.",
+    "Check UK invoices and contracts against Companies House, then wipe author, dates, EXIF, and Content Credentials. Nothing is stored.",
   robots: { index: false, follow: false },
 };
 
